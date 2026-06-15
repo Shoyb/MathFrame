@@ -8,18 +8,15 @@ Commands
 /constants        Reference embed of common mathematical constants.
 /help_math        Paginated list of every bot command, grouped by category.
 /convert          Convert between units of length, mass, or temperature.
-/about            Bot version, library versions, stats, and invite link.
+/about            Bot version, library versions, guild count, and uptime.
 
-History is stored in-memory only (see :mod:`data.history`) — nothing is
-written to disk or any database, and it resets if the bot restarts.
+History is stored in-memory (see :mod:`data.history`) — nothing is written
+to disk, and history resets if the bot restarts.
 """
 
-from datetime import datetime, timedelta
+import importlib.metadata
+from datetime import datetime, timezone, timedelta
 
-import matplotlib
-import numpy
-import scipy
-import sympy
 from sympy import Rational
 from sympy.physics.units import (
     Quantity,
@@ -34,24 +31,22 @@ from sympy.physics.units import (
     mile,
     pound,
 )
+import sympy
 from discord import app_commands
 from discord.ext import commands
 import discord
 
 from utils.formatter import math_embed, error_embed
 from utils.paginator import send_paginated
-from data.history import get_history, clear_history
+from data.history import get_history, clear_history, save_history   # noqa: F401  (save_history re-exported for cogs)
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
 _HISTORY_PAGE_SIZE = 5
-
-_BOT_VERSION = "1.0.0"
-
-# Replace with this bot's real OAuth2 invite URL once the application is set up.
-_INVITE_URL = "[TO BE FILLED]"
+_BOT_VERSION       = "1.0.0"
+_INVITE_URL        = ""      # fill in your OAuth2 invite URL once ready
 
 
 def _exact_and_decimal(expr: sympy.Basic, digits: int = 6) -> tuple[str, str]:
@@ -66,60 +61,58 @@ def _exact_and_decimal(expr: sympy.Basic, digits: int = 6) -> tuple[str, str]:
 
 def _format_uptime(delta: timedelta) -> str:
     """
-    Render a :class:`~datetime.timedelta` as a compact ``"1d 2h 3m 4s"``
-    string, omitting leading zero units (e.g. ``"5m 12s"`` for under an hour).
+    Render a timedelta as ``"1d 2h 3m 4s"``, omitting leading zero units.
     """
-    total_seconds = int(delta.total_seconds())
-    days, remainder = divmod(total_seconds, 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes, seconds = divmod(remainder, 60)
-
+    total = int(delta.total_seconds())
+    days, r   = divmod(total, 86400)
+    hours, r  = divmod(r, 3600)
+    minutes, seconds = divmod(r, 60)
     parts: list[str] = []
-    if days:
-        parts.append(f"{days}d")
-    if hours or parts:
-        parts.append(f"{hours}h")
-    if minutes or parts:
-        parts.append(f"{minutes}m")
+    if days:    parts.append(f"{days}d")
+    if hours   or parts: parts.append(f"{hours}h")
+    if minutes or parts: parts.append(f"{minutes}m")
     parts.append(f"{seconds}s")
-
     return " ".join(parts)
 
+
+def _lib_version(name: str) -> str:
+    """Return installed version of *name*, or 'unknown'."""
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 # ---------------------------------------------------------------------------
 # Unit tables (for /convert)
 # ---------------------------------------------------------------------------
 
-# sympy.physics.units has no built-in "ounce"; define it relative to the
-# pound (1 oz = 1/16 lb) so it can be used with convert_to() like any
-# other Quantity.
+# sympy.physics.units has no built-in ounce — define it relative to pound.
 _ounce = Quantity("ounce")
 _ounce.set_global_relative_scale_factor(Rational(1, 16), pound)
 
 _LENGTH_UNITS: dict[str, sympy.Basic] = {
-    "m": meter,
-    "km": kilometer,
-    "cm": centimeter,
-    "ft": foot,
+    "m":    meter,
+    "km":   kilometer,
+    "cm":   centimeter,
+    "ft":   foot,
     "mile": mile,
     "inch": inch,
 }
 
 _MASS_UNITS: dict[str, sympy.Basic] = {
     "kg": kilogram,
-    "g": gram,
+    "g":  gram,
     "lb": pound,
     "oz": _ounce,
 }
 
 _TEMP_UNITS: set[str] = {"c", "f", "k"}
+_TEMP_NAMES: dict[str, str] = {"c": "Celsius", "f": "Fahrenheit", "k": "Kelvin"}
 
-_TEMP_NAMES = {"c": "Celsius", "f": "Fahrenheit", "k": "Kelvin"}
-
-# unit-key -> (category, sympy Quantity or None for temperature)
+# unit-key → (category, sympy Quantity | None for temperature)
 _UNIT_CATEGORIES: dict[str, tuple[str, sympy.Basic | None]] = {
-    **{key: ("length", q) for key, q in _LENGTH_UNITS.items()},
-    **{key: ("mass", q) for key, q in _MASS_UNITS.items()},
+    **{key: ("length",      q)    for key, q in _LENGTH_UNITS.items()},
+    **{key: ("mass",        q)    for key, q in _MASS_UNITS.items()},
     **{key: ("temperature", None) for key in _TEMP_UNITS},
 }
 
@@ -129,65 +122,88 @@ _SUPPORTED_UNITS_STR = (
     "temperature: C, F, K"
 )
 
-# Absolute-zero offset: 0°C = 273.15 K, expressed exactly.
+# 0°C = 273.15 K, kept as an exact rational throughout.
 _FREEZING_K = Rational(27315, 100)
 
-# (from_unit, "k") -> formula(value, kelvin_result) and ("k", to_unit) -> formula(kelvin, value_result)
-_TEMP_TO_KELVIN = {
-    "c": lambda v, r: f"K = C + 273.15 = {v} + 273.15 = {r}",
-    "f": lambda v, r: f"K = (F − 32) × 5/9 + 273.15 = ({v} − 32) × 5/9 + 273.15 = {r}",
-    "k": lambda v, r: f"K = {v}",
-}
-_TEMP_FROM_KELVIN = {
-    "c": lambda v, r: f"C = K − 273.15 = {v} − 273.15 = {r}",
-    "f": lambda v, r: f"F = (K − 273.15) × 9/5 + 32 = ({v} − 273.15) × 9/5 + 32 = {r}",
-    "k": lambda v, r: f"K = {v}",
-}
 
-
-def _temp_to_kelvin(value: sympy.Rational, unit: str) -> sympy.Rational:
-    """Convert *value* (in *unit* — 'c', 'f', or 'k') to Kelvin, exactly."""
+def _temp_to_kelvin(value: Rational, unit: str) -> Rational:
+    """Convert *value* in *unit* ('c', 'f', 'k') to Kelvin exactly."""
     if unit == "c":
         return value + _FREEZING_K
     if unit == "f":
         return (value - 32) * Rational(5, 9) + _FREEZING_K
-    return value  # "k"
+    return value  # already Kelvin
 
 
-def _temp_from_kelvin(value_k: sympy.Rational, unit: str) -> sympy.Rational:
-    """Convert *value_k* (Kelvin) to *unit* ('c', 'f', or 'k'), exactly."""
+def _temp_from_kelvin(kelvin: Rational, unit: str) -> Rational:
+    """Convert *kelvin* to *unit* ('c', 'f', 'k') exactly."""
     if unit == "c":
-        return value_k - _FREEZING_K
+        return kelvin - _FREEZING_K
     if unit == "f":
-        return (value_k - _FREEZING_K) * Rational(9, 5) + 32
-    return value_k  # "k"
+        return (kelvin - _FREEZING_K) * Rational(9, 5) + 32
+    return kelvin  # Kelvin → Kelvin
 
+
+def _temp_steps(
+    val: Rational,
+    from_key: str,
+    kelvin: Rational,
+    to_key: str,
+    result: Rational,
+) -> list[tuple[str, str]]:
+    """Build the step list for a temperature conversion."""
+    steps: list[tuple[str, str]] = []
+
+    # Step 1: to Kelvin (skip if already Kelvin)
+    if from_key == "c":
+        steps.append((
+            f"Convert {_TEMP_NAMES[from_key]} → Kelvin",
+            f"K = {val} + 273.15 = {sympy.N(kelvin, 8)}",
+        ))
+    elif from_key == "f":
+        steps.append((
+            f"Convert {_TEMP_NAMES[from_key]} → Kelvin",
+            f"K = ({val} − 32) × 5/9 + 273.15 = {sympy.N(kelvin, 8)}",
+        ))
+
+    # Step 2: from Kelvin to target (skip if target is Kelvin)
+    if to_key == "c":
+        steps.append((
+            f"Convert Kelvin → {_TEMP_NAMES[to_key]}",
+            f"C = {sympy.N(kelvin, 8)} − 273.15 = {sympy.N(result, 8)}",
+        ))
+    elif to_key == "f":
+        steps.append((
+            f"Convert Kelvin → {_TEMP_NAMES[to_key]}",
+            f"F = ({sympy.N(kelvin, 8)} − 273.15) × 9/5 + 32 = {sympy.N(result, 8)}",
+        ))
+
+    if not steps:
+        steps.append(("Same unit", f"{val} K"))
+
+    return steps
 
 # ---------------------------------------------------------------------------
 # Mathematical constants (for /constants)
 # ---------------------------------------------------------------------------
 
 _CONSTANTS: list[tuple[str, str, sympy.Basic, str]] = [
-    ("π", "Pi", sympy.pi, "The ratio of a circle's circumference to its diameter."),
-    ("e", "Euler's number", sympy.E, "Base of the natural logarithm; limit of (1 + 1/n)ⁿ."),
-    ("φ", "Golden ratio", sympy.GoldenRatio, "(1 + √5) / 2 — appears in art, architecture, and nature."),
-    ("√2", "Square root of 2", sympy.sqrt(2), "Diagonal length of a unit square; the first number proven irrational."),
-    ("i", "Imaginary unit", sympy.I, "Defined by i² = −1; the foundation of the complex numbers."),
-    ("∞", "Infinity", sympy.oo, "An unbounded quantity, larger than any real number."),
+    ("π",  "Pi",             sympy.pi,          "Ratio of a circle's circumference to its diameter."),
+    ("e",  "Euler's number", sympy.E,            "Base of the natural logarithm; limit of (1 + 1/n)ⁿ."),
+    ("φ",  "Golden ratio",   sympy.GoldenRatio,  "(1 + √5) / 2 — appears in art, architecture, and nature."),
+    ("√2", "Square root of 2", sympy.sqrt(2),   "Diagonal of a unit square; first number proven irrational."),
+    ("i",  "Imaginary unit", sympy.I,            "Defined by i² = −1; foundation of complex numbers."),
+    ("∞",  "Infinity",       sympy.oo,           "Unbounded quantity, larger than any real number."),
 ]
 
 
 def _constant_decimal(value: sympy.Basic) -> str:
-    """
-    Return a 10-place decimal string for *value*, or a short note for the
-    non-real constants (``i`` and ``∞``) that don't have one.
-    """
+    """10-place decimal string, or a short note for i and ∞."""
     if value == sympy.I:
-        return "i  (not on the real number line)"
+        return "i  (not a real number)"
     if value == sympy.oo:
-        return "∞  (unbounded — not a finite number)"
+        return "∞  (not a finite number)"
     return str(sympy.N(value, 10))
-
 
 # ---------------------------------------------------------------------------
 # Confirmation view (for /clear_history)
@@ -195,19 +211,16 @@ def _constant_decimal(value: sympy.Basic) -> str:
 
 class _ConfirmClearView(discord.ui.View):
     """
-    A Yes/No confirmation prompt for ``/clear_history``.
+    Ephemeral Yes / No prompt for ``/clear_history``.
 
-    Only the user who triggered the original command may press a button.
-    If the view times out with no response, both buttons are disabled and
-    the original message is edited to say so.
+    Only the invoking user can press either button.  On timeout the buttons
+    are disabled and the message is edited to say the action was cancelled.
     """
 
-    def __init__(self, owner_id: int, timeout: float = 30) -> None:
+    def __init__(self, owner_id: int, timeout: float = 30.0) -> None:
         super().__init__(timeout=timeout)
         self.owner_id = owner_id
-        # Set by the command after sending, so on_timeout can edit the
-        # original (ephemeral) message.
-        self.interaction: discord.Interaction | None = None
+        self.message: discord.InteractionMessage | None = None  # set after send
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -223,36 +236,42 @@ class _ConfirmClearView(discord.ui.View):
                 child.disabled = True
 
     @discord.ui.button(label="Yes, clear it", style=discord.ButtonStyle.danger, custom_id="clear_yes")
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        clear_history(self.owner_id)
+    async def confirm(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        cleared = clear_history(self.owner_id)   # sync — in-memory, no await needed
         self._disable_all()
         self.stop()
-        await interaction.response.edit_message(content="History cleared.", view=self)
+        await interaction.response.edit_message(
+            content=f"History cleared ({cleared} entr{'y' if cleared == 1 else 'ies'} removed).",
+            view=self,
+        )
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, custom_id="clear_no")
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def cancel(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
         self._disable_all()
         self.stop()
         await interaction.response.edit_message(content="Cancelled.", view=self)
 
     async def on_timeout(self) -> None:
         self._disable_all()
-        if self.interaction is not None:
+        if self.message is not None:
             try:
-                await self.interaction.edit_original_response(
+                await self.message.edit(
                     content="Confirmation timed out — history was not cleared.",
                     view=self,
                 )
             except discord.HTTPException:
                 pass
 
-
 # ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 
 class UtilityCog(commands.Cog, name="Utility"):
-    """Utility commands: history, reference constants, help, and unit conversion."""
+    """Utility commands: history, constants, help, and unit conversion."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -267,26 +286,25 @@ class UtilityCog(commands.Cog, name="Utility"):
     )
     @app_commands.checks.cooldown(1, 2.0)
     async def history(self, interaction: discord.Interaction) -> None:
-        """Display the user's recent commands, 5 per page, newest first."""
+        """Display the user's last 20 calculations, 5 per page, newest first."""
         entries = get_history(interaction.user.id, limit=20)
 
         if not entries:
-            await interaction.response.send_message("No calculations yet.", ephemeral=True)
+            await interaction.response.send_message(
+                "No calculations yet.", ephemeral=True
+            )
             return
 
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
         pages: list[discord.Embed] = []
         for i in range(0, len(entries), _HISTORY_PAGE_SIZE):
             chunk = entries[i:i + _HISTORY_PAGE_SIZE]
-            embed = discord.Embed(
-                title="Calculation History",
-                colour=discord.Colour.blurple(),
-            )
+            embed = discord.Embed(title="Calculation History", colour=discord.Colour.blurple())
             for entry in chunk:
-                ts = int(entry.timestamp.timestamp())
+                ts = int(entry.created_at.timestamp())
                 embed.add_field(
-                    name=f"/{entry.command} `{entry.input}`",
+                    name=f"/{entry.command}  `{entry.input}`",
                     value=f"→ `{entry.result}`\n<t:{ts}:R>",
                     inline=False,
                 )
@@ -302,17 +320,18 @@ class UtilityCog(commands.Cog, name="Utility"):
         name="clear_history",
         description="Clear your calculation history.",
     )
-    @app_commands.checks.cooldown(1, 2.0)
+    @app_commands.checks.cooldown(1, 5.0)
     async def clear_history_cmd(self, interaction: discord.Interaction) -> None:
         """Ask for confirmation, then clear the user's history if confirmed."""
         view = _ConfirmClearView(interaction.user.id)
         await interaction.response.send_message(
             "Are you sure you want to clear your calculation history? "
-            "This cannot be undone.",
+            "This **cannot** be undone.",
             view=view,
             ephemeral=True,
         )
-        view.interaction = interaction
+        # Store the message reference so on_timeout can edit it.
+        view.message = await interaction.original_response()
 
     # -----------------------------------------------------------------------
     # /constants
@@ -331,10 +350,9 @@ class UtilityCog(commands.Cog, name="Utility"):
             title="Mathematical Constants",
             colour=discord.Colour.gold(),
         )
-
         for symbol, name, value, description in _CONSTANTS:
             embed.add_field(
-                name=f"{symbol}   —   {name}",
+                name=f"{symbol}  —  {name}",
                 value=f"`{_constant_decimal(value)}`\n{description}",
                 inline=False,
             )
@@ -351,10 +369,7 @@ class UtilityCog(commands.Cog, name="Utility"):
     )
     @app_commands.checks.cooldown(1, 2.0)
     async def help_math(self, interaction: discord.Interaction) -> None:
-        """
-        Build one page per loaded cog, each listing its slash commands and
-        descriptions, and present them with the standard paginator.
-        """
+        """One page per loaded cog, listing its slash commands and descriptions."""
         await interaction.response.defer()
 
         pages: list[discord.Embed] = []
@@ -362,12 +377,10 @@ class UtilityCog(commands.Cog, name="Utility"):
             app_cmds = cog.get_app_commands()
             if not app_cmds:
                 continue
-
             lines = [
                 f"**/{cmd.name}** — {cmd.description}"
                 for cmd in sorted(app_cmds, key=lambda c: c.name)
             ]
-
             embed = discord.Embed(
                 title=f"📘 {cog_name}",
                 description="\n".join(lines),
@@ -390,9 +403,9 @@ class UtilityCog(commands.Cog, name="Utility"):
         description="Convert a value between units of length, mass, or temperature.",
     )
     @app_commands.describe(
-        value="Numeric value to convert",
-        from_unit="Unit to convert from: m, km, cm, ft, mile, inch, kg, g, lb, oz, C, F, K",
-        to_unit="Unit to convert to (must be the same category as from_unit)",
+        value     = "Numeric value to convert",
+        from_unit = "Unit to convert from: m, km, cm, ft, mile, inch, kg, g, lb, oz, C, F, K",
+        to_unit   = "Unit to convert to (must be the same category as from_unit)",
     )
     @app_commands.checks.cooldown(1, 2.0)
     async def convert(
@@ -402,69 +415,62 @@ class UtilityCog(commands.Cog, name="Utility"):
         from_unit: str,
         to_unit: str,
     ) -> None:
-        """Convert *value* from *from_unit* to *to_unit* (length, mass, or temperature)."""
+        """Convert *value* from *from_unit* to *to_unit*."""
         await interaction.response.defer()
 
         try:
             from_key = from_unit.strip().lower()
-            to_key = to_unit.strip().lower()
+            to_key   = to_unit.strip().lower()
 
             if from_key not in _UNIT_CATEGORIES:
                 raise ValueError(
-                    f"Unsupported unit `{from_unit}`. Supported units — {_SUPPORTED_UNITS_STR}."
+                    f"Unsupported unit `{from_unit}`.\n"
+                    f"Supported: {_SUPPORTED_UNITS_STR}."
                 )
             if to_key not in _UNIT_CATEGORIES:
                 raise ValueError(
-                    f"Unsupported unit `{to_unit}`. Supported units — {_SUPPORTED_UNITS_STR}."
+                    f"Unsupported unit `{to_unit}`.\n"
+                    f"Supported: {_SUPPORTED_UNITS_STR}."
                 )
 
             from_cat, from_q = _UNIT_CATEGORIES[from_key]
-            to_cat, to_q = _UNIT_CATEGORIES[to_key]
+            to_cat,   to_q   = _UNIT_CATEGORIES[to_key]
 
             if from_cat != to_cat:
                 raise ValueError(
-                    f"Cannot convert `{from_unit}` ({from_cat}) to `{to_unit}` ({to_cat}) "
-                    "— units must be from the same category."
+                    f"Cannot convert `{from_unit}` ({from_cat}) to "
+                    f"`{to_unit}` ({to_cat}) — units must be the same category."
                 )
 
-            val = Rational(str(value))
+            val = Rational(str(value))   # exact rational, avoids float drift
 
             if from_cat == "temperature":
                 kelvin = _temp_to_kelvin(val, from_key)
                 result = _temp_from_kelvin(kelvin, to_key)
-
-                steps = []
-                if from_key != "k":
-                    steps.append((
-                        f"Convert {_TEMP_NAMES[from_key]} to Kelvin",
-                        _TEMP_TO_KELVIN[from_key](val, kelvin),
-                    ))
-                if to_key != "k":
-                    steps.append((
-                        f"Convert Kelvin to {_TEMP_NAMES[to_key]}",
-                        _TEMP_FROM_KELVIN[to_key](kelvin, result),
-                    ))
-                if not steps:
-                    steps.append(("Same unit", f"{val} K = {val} K"))
-
+                steps  = _temp_steps(val, from_key, kelvin, to_key, result)
             else:
-                # Conversion factor for 1 unit, computed once via
-                # sympy.physics.units, then applied ourselves so the
-                # formula step is easy to read.
-                factor_expr = convert_to(1 * from_q, to_q)
-                factor = factor_expr.as_coeff_Mul()[0] if factor_expr != 0 else sympy.Integer(0)
+                # Derive the conversion factor via SymPy units, then divide
+                # out the target unit to get a plain dimensionless number.
+                factor_expr = convert_to(from_q, to_q)
+                factor = sympy.nsimplify(
+                    factor_expr / to_q, rational=True
+                )
                 result = val * factor
-
-                steps = [
+                steps  = [
                     ("Conversion factor", f"1 {from_unit} = {factor} {to_unit}"),
-                    ("Apply factor", f"{val} {from_unit} × {factor} = {result}"),
+                    ("Apply factor",      f"{val} × {factor} = {sympy.N(result, 8)} {to_unit}"),
                 ]
 
             exact_str, decimal_str = _exact_and_decimal(result)
+            result_display = (
+                f"{exact_str}  ≈  {decimal_str} {to_unit.upper()}"
+                if exact_str != decimal_str
+                else f"{exact_str} {to_unit.upper()}"
+            )
 
             embed = math_embed(
-                title=f"Convert {value} {from_unit} → {to_unit}",
-                result=f"{exact_str}   ≈ {decimal_str}",
+                title=f"Convert  {value} {from_unit.upper()} → {to_unit.upper()}",
+                result=result_display,
                 steps=steps,
                 footer=f"{from_cat.capitalize()} conversion",
             )
@@ -481,57 +487,44 @@ class UtilityCog(commands.Cog, name="Utility"):
         name="about",
         description="Show information about this bot.",
     )
-    @app_commands.checks.cooldown(1, 2.0)
+    @app_commands.checks.cooldown(1, 5.0)
     async def about(self, interaction: discord.Interaction) -> None:
-        """Display version, library, stats, uptime, and invite information."""
+        """Display version, library versions, guild count, and uptime."""
         await interaction.response.defer()
 
-        bot = self.bot
-        user = bot.user
-
+        user = self.bot.user
         embed = discord.Embed(
-            title=f"About {user.name if user else 'this bot'}",
+            title=f"About {user.name if user else 'MathFrame'}",
             colour=discord.Colour.green(),
         )
 
         if user and user.display_avatar:
             embed.set_thumbnail(url=user.display_avatar.url)
 
-        embed.add_field(name="Version", value=_BOT_VERSION, inline=True)
-        embed.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
-        embed.add_field(
-            name="Commands",
-            value=str(len(bot.tree.get_commands())),
-            inline=True,
-        )
+        embed.add_field(name="Version",  value=_BOT_VERSION,                   inline=True)
+        embed.add_field(name="Servers",  value=str(len(self.bot.guilds)),       inline=True)
+        embed.add_field(name="Commands", value=str(len(self.bot.tree.get_commands())), inline=True)
 
-        start_time = getattr(bot, "start_time", None)
-        if start_time is not None:
-            uptime_str = _format_uptime(datetime.utcnow() - start_time)
-        else:
-            uptime_str = "Unknown"
+        start_time: datetime | None = getattr(self.bot, "start_time", None)
+        uptime_str = _format_uptime(datetime.now(tz=timezone.utc) - start_time) if start_time else "Unknown"
         embed.add_field(name="Uptime", value=uptime_str, inline=True)
 
         embed.add_field(
-            name="Library Versions",
+            name="Libraries",
             value=(
                 f"discord.py `{discord.__version__}`\n"
-                f"sympy `{sympy.__version__}`\n"
-                f"numpy `{numpy.__version__}`\n"
-                f"scipy `{scipy.__version__}`\n"
-                f"matplotlib `{matplotlib.__version__}`"
+                f"sympy `{_lib_version('sympy')}`\n"
+                f"numpy `{_lib_version('numpy')}`\n"
+                f"scipy `{_lib_version('scipy')}`\n"
+                f"matplotlib `{_lib_version('matplotlib')}`"
             ),
             inline=True,
         )
 
-        embed.add_field(
-            name="Invite",
-            value=f"[Add to your server]({_INVITE_URL})",
-            inline=False,
-        )
+        if _INVITE_URL:
+            embed.add_field(name="Invite", value=f"[Add to your server]({_INVITE_URL})", inline=False)
 
         embed.set_footer(text="Made with Python 🐍")
-
         await interaction.followup.send(embed=embed)
 
 
