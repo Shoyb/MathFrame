@@ -770,26 +770,24 @@ class PlotEngineView(ui.View):
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
 
     async def _on_render(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(ephemeral=True)
         try:
             file = await _render(self.cfg)
             self.cfg.last_error = ""
         except Exception as exc:
             self.cfg.last_error = str(exc)
-            await interaction.followup.edit_message(
-                message_id=interaction.message.id,
-                embed=_config_embed(self.cfg),
-                view=self,
+            await interaction.followup.send(
+                f"⚠ Render failed: {exc}", ephemeral=True,
             )
-            await interaction.followup.send(f"⚠ Render failed: {exc}", ephemeral=True)
             return
 
-        await interaction.followup.edit_message(
-            message_id=interaction.message.id,
+        # Update the control-panel embed to clear any previous error.
+        await interaction.message.edit(
             embed=_config_embed(self.cfg),
             view=self,
         )
 
+        # Post the rendered plot publicly to the channel.
         embed_out = discord.Embed(
             title=self.cfg.title or f"{self.cfg.plot_type} plot",
             color=EMBED_COLOR,
@@ -799,12 +797,11 @@ class PlotEngineView(ui.View):
             text=(f"type={self.cfg.plot_type} | cmap={self.cfg.colormap} | "
                   f"alpha={self.cfg.alpha} | res={self.cfg.resolution}")
         )
-        await interaction.followup.send(embed=embed_out, file=file)
+        await interaction.channel.send(embed=embed_out, file=file)
 
     async def _on_reset(self, interaction: discord.Interaction) -> None:
         pt = self.cfg.plot_type
-        self.cfg.__init__()
-        self.cfg.plot_type = pt
+        self.cfg = PlotConfig(plot_type=pt)
         self.clear_items()
         self._add_type_select()
         self._add_buttons()
@@ -937,6 +934,9 @@ class PlotEngine(commands.Cog):
         color="Line colour (hex or name, default #1f77b4).",
         line_style="Line style: solid | dashed | dotted | dashdot.",
     )
+    @app_commands.choices(line_style=[
+        app_commands.Choice(name=s, value=s) for s in LINE_STYLES
+    ])
     async def quickplot(
         self,
         interaction: discord.Interaction,
@@ -945,7 +945,7 @@ class PlotEngine(commands.Cog):
         x_max: float  = 10.0,
         title: str    = "",
         color: str    = "#1f77b4",
-        line_style: app_commands.Choice[str] = None,
+        line_style: Optional[app_commands.Choice[str]] = None,
     ) -> None:
         await interaction.response.defer(thinking=True)
 

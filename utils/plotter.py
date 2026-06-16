@@ -671,7 +671,7 @@ def _plot_parametric_3d_blocking(
             zs = np.asarray(fz(ts), dtype=float)
 
         norm   = plt.Normalize(ts.min(), ts.max())
-        colors = cm.get_cmap(style.colormap)(norm(ts))
+        colors = plt.get_cmap(style.colormap)(norm(ts))
 
         fig, ax = _make_3d_axes(style)
         for i in range(len(ts) - 1):
@@ -680,7 +680,7 @@ def _plot_parametric_3d_blocking(
                 color=colors[i], linewidth=style.line_width,
             )
 
-        sm = cm.ScalarMappable(cmap=style.colormap, norm=norm)
+        sm = cm.ScalarMappable(cmap=plt.get_cmap(style.colormap), norm=norm)
         sm.set_array([])
         fig.colorbar(sm, ax=ax, shrink=0.55, pad=0.1, label=str(t_var))
 
