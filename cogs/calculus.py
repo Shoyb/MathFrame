@@ -7,11 +7,13 @@ Commands
 /integrate  expression [variable] [lower] [upper]       Definite or indefinite integral.
 /limit      expression [variable] [point] [direction]   Evaluate a limit.
 /series     expression [variable] [point] [terms]       Taylor / Maclaurin series.
-/plot       expression [variable] [xmin] [xmax]         Plot a function as a PNG image.
 
 All commands defer immediately and surface errors through a consistent
 red error embed.  Computation-heavy calls run through the async parser
 so the event loop is never blocked.
+
+Note: plotting is handled entirely by cogs/plot_engine.py (/plot, /quickplot,
+/multiplot).  Do not add a /plot command here.
 """
 
 import sympy
@@ -22,8 +24,6 @@ import discord
 from utils.parser    import parse_expression
 from utils.formatter import math_embed, error_embed, to_readable_text
 from utils.solver    import differentiate_steps, integrate_steps
-from utils.plotter   import plot_function
-from utils.renderer  import result_to_image
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -32,6 +32,7 @@ from utils.renderer  import result_to_image
 _ORDINALS = {
     1: "1st", 2: "2nd", 3: "3rd",
 }
+
 
 def _ordinal(n: int) -> str:
     """Return "1st", "2nd", "3rd", "4th", … for a positive integer *n*."""
@@ -76,7 +77,7 @@ def _parse_point(point_str: str) -> sympy.Basic:
 # ---------------------------------------------------------------------------
 
 class CalculusCog(commands.Cog, name="Calculus"):
-    """Calculus commands: differentiation, integration, limits, series, and plotting."""
+    """Calculus commands: differentiation, integration, limits, and series."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -231,14 +232,14 @@ class CalculusCog(commands.Cog, name="Calculus"):
             result = sympy.limit(expr, var, pt, direction)
 
             # Human-readable notation for the title
-            dir_symbol = {"+" : "⁺", "-": "⁻", "+-": ""}.get(direction, "")
+            dir_symbol = {"+": "⁺", "-": "⁻", "+-": ""}.get(direction, "")
             title = f"lim  {variable} → {point}{dir_symbol}  [{expression}]"
 
             embed = math_embed(
                 title=title,
                 result=to_readable_text(result),
                 footer=f"Limit as {variable} → {point} from the "
-                       + {"+" : "right", "-": "left", "+-": "both sides"}[direction],
+                       + {"+": "right", "-": "left", "+-": "both sides"}[direction],
             )
             await interaction.followup.send(embed=embed)
 
@@ -295,79 +296,6 @@ class CalculusCog(commands.Cog, name="Calculus"):
                 footer=f"Taylor series of {expression} around {variable} = {point}  |  {terms} terms",
             )
             await interaction.followup.send(embed=embed)
-
-        except ValueError as exc:
-            await interaction.followup.send(embed=error_embed(str(exc)))
-
-    # -----------------------------------------------------------------------
-    # /plot
-    # -----------------------------------------------------------------------
-
-    @app_commands.command(
-        name="plot",
-        description="Plot a function over a specified x range.",
-    )
-    @app_commands.describe(
-        expression="Function to plot, e.g. sin(x)/x or x**3 - x",
-        variable="Independent variable (default: x)",
-        xmin="Left boundary of the plot domain (default: -10)",
-        xmax="Right boundary of the plot domain (default: 10)",
-    )
-    @app_commands.checks.cooldown(1, 3.0)
-    async def plot(
-        self,
-        interaction: discord.Interaction,
-        expression: str,
-        variable: str = "x",
-        xmin: float = -10.0,
-        xmax: float = 10.0,
-    ) -> None:
-        """Render a PNG plot of *expression* and send it as a file attachment."""
-        await interaction.response.defer()
-
-        try:
-            if xmin >= xmax:
-                raise ValueError(
-                    f"`xmin` ({xmin}) must be strictly less than `xmax` ({xmax})."
-                )
-
-            expr = await parse_expression(expression)
-            var  = sympy.Symbol(variable)
-
-            # Render the expression as a LaTeX thumbnail and the function as a plot
-            latex_file = await result_to_image(expr)
-            plot_file  = await plot_function(
-                expr,
-                var,
-                x_min=xmin,
-                x_max=xmax,
-                title=f"f({variable}) = {expression}",
-            )
-
-            embed = discord.Embed(
-                title=f"Plot of  {expression}",
-                colour=discord.Colour.blurple(),
-            )
-            embed.add_field(
-                name="Expression",
-                value=f"```{expression}```",
-                inline=False,
-            )
-            embed.add_field(
-                name="Domain",
-                value=f"`{variable}` ∈ [{xmin}, {xmax}]",
-                inline=True,
-            )
-            embed.set_footer(text="Values outside ±1 000 000 are clipped for readability.")
-
-            # Main image: the function plot; thumbnail: the rendered LaTeX formula
-            embed.set_image(url="attachment://plot.png")
-            embed.set_thumbnail(url="attachment://formula.png")
-
-            await interaction.followup.send(
-                embed=embed,
-                files=[plot_file, latex_file],
-            )
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))

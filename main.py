@@ -40,6 +40,7 @@ COGS: list[str] = [
     "cogs.symbolic",
     "cogs.utility",
     "cogs.render",
+    "cogs.plot_engine",
     "cogs.wiki"
 ]
 
