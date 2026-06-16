@@ -329,10 +329,10 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
     expr_a   = ui.TextInput(label="Expression A  (see hint in embed)",
                              placeholder="e.g. sin(x)/x   or   x**2 + y**2",
                              required=False, max_length=300)
-    expr_b   = ui.TextInput(label="Expression B  (u for vector-field, y(t) for parametric)",
+    expr_b   = ui.TextInput(label="Expr B (u for vector, y(t) for parametric)",
                              placeholder="e.g. cos(t)  or  -y",
                              required=False, max_length=300)
-    expr_c   = ui.TextInput(label="Expression C  (v for vector-field, z(t) for 3-D)",
+    expr_c   = ui.TextInput(label="Expr C (v for vector, z(t) for 3-D)",
                              placeholder="e.g. x  or  t/(2*pi)",
                              required=False, max_length=300)
     domain_x = ui.TextInput(label="x range  OR  t range  (min, max)",
@@ -426,9 +426,9 @@ class StyleModal(ui.Modal, title="Line & Marker Style"):
                                required=False, max_length=40)
     width      = ui.TextInput(label="Line width  (float, e.g. 2.0)",
                                placeholder="2.0", required=False, max_length=10)
-    style      = ui.TextInput(label="Line style  (solid | dashed | dotted | dashdot)",
+    style      = ui.TextInput(label="Line style (solid|dashed|dotted|dashdot)",
                                placeholder="solid", required=False, max_length=10)
-    marker     = ui.TextInput(label="Marker  (none | . | o | s | ^ | D | * | + | x)",
+    marker     = ui.TextInput(label="Marker (none|.|o|s|^|D|*|+|x)",
                                placeholder="none", required=False, max_length=5)
     markersize = ui.TextInput(label="Marker size  (float, e.g. 6.0)",
                                placeholder="6.0", required=False, max_length=10)
