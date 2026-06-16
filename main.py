@@ -39,6 +39,8 @@ COGS: list[str] = [
     "cogs.discrete",
     "cogs.symbolic",
     "cogs.utility",
+    "cogs.render",
+    "cogs.wiki"
 ]
 
 # ---------------------------------------------------------------------------
