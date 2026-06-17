@@ -370,7 +370,10 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
             if pt == "scatter-3d":
                 self.expr_c.default = cfg.scatter_zs
 
-        self.domain_x.default = f"{cfg.x_min}, {cfg.x_max}"
+        if pt in ("parametric-2d", "parametric-3d"):
+            self.domain_x.default = f"{cfg.t_min}, {cfg.t_max}"
+        else:
+            self.domain_x.default = f"{cfg.x_min}, {cfg.x_max}"
         self.domain_y.default = f"{cfg.y_min}, {cfg.y_max}"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -752,7 +755,7 @@ class PlotEngineView(ui.View):
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
 
     async def _on_cmap(self, interaction: discord.Interaction) -> None:
-        view = ColormapPickerView(self.cfg, parent=self)
+        view = ColormapPickerView(self.cfg, parent=self, panel_message=interaction.message)
         await interaction.response.send_message(
             embed=discord.Embed(
                 title="Choose a Colormap",
@@ -776,6 +779,7 @@ class PlotEngineView(ui.View):
             self.cfg.last_error = ""
         except Exception as exc:
             self.cfg.last_error = str(exc)
+            await interaction.message.edit(embed=_config_embed(self.cfg), view=self)
             await interaction.followup.send(
                 f"⚠ Render failed: {exc}", ephemeral=True,
             )
@@ -792,7 +796,7 @@ class PlotEngineView(ui.View):
             title=self.cfg.title or f"{self.cfg.plot_type} plot",
             color=EMBED_COLOR,
         )
-        embed_out.set_image(url="attachment://plot.png")
+        embed_out.set_image(url=f"attachment://{file.filename}")
         embed_out.set_footer(
             text=(f"type={self.cfg.plot_type} | cmap={self.cfg.colormap} | "
                   f"alpha={self.cfg.alpha} | res={self.cfg.resolution}")
@@ -821,10 +825,11 @@ class ColormapPickerView(ui.View):
 
     PAGE_SIZE = 25
 
-    def __init__(self, cfg: PlotConfig, parent: PlotEngineView) -> None:
+    def __init__(self, cfg: PlotConfig, parent: PlotEngineView, panel_message: discord.Message) -> None:
         super().__init__(timeout=120)
         self._cfg    = cfg
         self._parent = parent
+        self._panel_message = panel_message
         self._page   = 0
         self._build()
 
@@ -854,6 +859,7 @@ class ColormapPickerView(ui.View):
         self._parent.clear_items()
         self._parent._add_type_select()
         self._parent._add_buttons()
+        await self._panel_message.edit(embed=_config_embed(self._cfg), view=self._parent)
         await interaction.response.edit_message(
             content=f"Colormap set to `{self._cfg.colormap}`.", view=None
         )
