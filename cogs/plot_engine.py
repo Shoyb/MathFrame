@@ -54,8 +54,13 @@ Dependencies
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
+
+import base64
+import json
+import zlib
+import re
 
 import discord
 import sympy
@@ -136,6 +141,7 @@ class PlotConfig:
     scatter_xs: str = "1,2,3,4,5"
     scatter_ys: str = "1,4,9,16,25"
     scatter_zs: str = "0,1,0,1,0"
+    additional_exprs: List[str] = field(default_factory=list)
 
     # ── domain ────────────────────────────────────────────────────────────
     x_min: float = -10.0
@@ -161,9 +167,11 @@ class PlotConfig:
 
     # ── surface / contour / vector style ──────────────────────────────────
     colormap: str   = "viridis"
+    theme:    str   = "default"
     alpha:    float = 0.9
     levels:   int   = 20
     stream:   bool  = False
+    anim_param: str = ""
 
     # ── resolution & figure ───────────────────────────────────────────────
     resolution: int   = 120
@@ -188,6 +196,7 @@ class PlotConfig:
             marker      = None if self.marker == "none" else self.marker,
             marker_size = self.marker_size,
             colormap    = self.colormap,
+            theme       = self.theme,
             alpha       = self.alpha,
             show_grid   = self.show_grid,
             dpi         = self.dpi,
@@ -195,10 +204,40 @@ class PlotConfig:
             fig_height  = self.fig_height,
         )
 
+    def export_config(self) -> str:
+        """Export session state as a base64-encoded compressed JSON string."""
+        data = {k: v for k, v in self.__dict__.items() if k != "last_error"}
+        js = json.dumps(data)
+        compressed = zlib.compress(js.encode("utf-8"))
+        return base64.urlsafe_b64encode(compressed).decode("ascii")
+
+    @classmethod
+    def import_config(cls, data: str) -> "PlotConfig":
+        """Reconstruct a PlotConfig from an exported string."""
+        try:
+            compressed = base64.urlsafe_b64decode(data.encode("ascii"))
+            js = zlib.decompress(compressed).decode("utf-8")
+            state = json.loads(js)
+            cfg = cls()
+            for k, v in state.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+            return cfg
+        except Exception as exc:
+            raise ValueError(f"Invalid config string: {exc}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _clean_sympy_expr(s: str) -> str:
+    """Smart auto-correction for common syntax errors."""
+    if not s: return ""
+    s = s.replace("^", "**")
+    s = re.sub(r'\be\^', 'exp', s)
+    s = re.sub(r'\be\*\*', 'exp', s)
+    return s
 
 def _parse_float(s: str, default: float) -> float:
     try:
@@ -255,12 +294,14 @@ def _config_embed(cfg: PlotConfig) -> discord.Embed:
     )
     embed.add_field(name="Type",     value=f"`{cfg.plot_type}`",    inline=True)
     embed.add_field(name="Title",    value=cfg.title or "*(auto)*", inline=True)
-    embed.add_field(name="Colormap", value=f"`{cfg.colormap}`",     inline=True)
+    embed.add_field(name="Theme",    value=f"`{cfg.theme}`",        inline=True)
 
     # ── type-specific expression summary ──────────────────────────────────
     # Add a new elif block here when adding a new plot type.
     if cfg.plot_type == "function":
         embed.add_field(name="f(x)",   value=f"`{cfg.expr_main}`",              inline=False)
+        if cfg.additional_exprs:
+            embed.add_field(name="Extra f(x)", value=", ".join(f"`{e}`" for e in cfg.additional_exprs), inline=False)
         embed.add_field(name="Domain", value=f"x ∈ [{cfg.x_min}, {cfg.x_max}]", inline=True)
 
     elif cfg.plot_type in ("contour", "surface", "wireframe"):
@@ -322,6 +363,38 @@ def _config_embed(cfg: PlotConfig) -> discord.Embed:
 # ─────────────────────────────────────────────────────────────────────────────
 # Modals
 # ─────────────────────────────────────────────────────────────────────────────
+
+class AdditionalExprModal(ui.Modal, title="Additional Expressions"):
+    exprs = ui.TextInput(label="Extra f(x) functions (one per line)",
+                         style=discord.TextStyle.paragraph,
+                         placeholder="cos(x)\nx**2 / 2\nexp(-x)",
+                         required=False, max_length=1000)
+
+    def __init__(self, cfg: PlotConfig, view: "PlotEngineView") -> None:
+        super().__init__()
+        self._cfg = cfg
+        self._view = view
+        self.exprs.default = "\n".join(cfg.additional_exprs)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        lines = [line.strip() for line in self.exprs.value.split("\n") if line.strip()]
+        self._cfg.additional_exprs = lines
+        await interaction.response.edit_message(embed=_config_embed(self._cfg), view=self._view)
+
+class AnimationParamModal(ui.Modal, title="Animation Settings"):
+    anim_param = ui.TextInput(label="Animation parameter (e.g. 'a')",
+                              placeholder="a", required=True, max_length=10)
+
+    def __init__(self, cfg: PlotConfig, view: "PlotEngineView") -> None:
+        super().__init__()
+        self._cfg = cfg
+        self._view = view
+        self.anim_param.default = cfg.anim_param or "a"
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        self._cfg.anim_param = self.anim_param.value.strip()
+        await self._view._render_animation(interaction)
+
 
 class ExpressionModal(ui.Modal, title="Expressions & Domain"):
     """Collects function expressions and domain/range values."""
@@ -560,16 +633,23 @@ async def _render(cfg: PlotConfig) -> discord.File:
     pt    = cfg.plot_type
 
     if pt == "function":
-        expr = _sympy_expr(cfg.expr_main, x)
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x)
+        additional = []
+        for e in cfg.additional_exprs:
+            try:
+                additional.append(_sympy_expr(_clean_sympy_expr(e), x))
+            except Exception:
+                pass
         return await plot_function(
             expr, x,
             x_min=cfg.x_min, x_max=cfg.x_max,
             title=cfg.title or str(expr),
             style=style,
+            additional_exprs=additional,
         )
 
     elif pt == "contour":
-        expr = _sympy_expr(cfg.expr_main, x, y)
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y)
         return await plot_contour(
             expr, x, y,
             x_range=(cfg.x_min, cfg.x_max),
@@ -580,8 +660,8 @@ async def _render(cfg: PlotConfig) -> discord.File:
         )
 
     elif pt == "vector-field":
-        u = _sympy_expr(cfg.expr_u, x, y)
-        v = _sympy_expr(cfg.expr_v, x, y)
+        u = _sympy_expr(_clean_sympy_expr(cfg.expr_u), x, y)
+        v = _sympy_expr(_clean_sympy_expr(cfg.expr_v), x, y)
         return await plot_vector_field(
             u, v, x, y,
             x_range=(cfg.x_min, cfg.x_max),
@@ -592,8 +672,8 @@ async def _render(cfg: PlotConfig) -> discord.File:
         )
 
     elif pt == "parametric-2d":
-        xe = _sympy_expr(cfg.expr_x, t)
-        ye = _sympy_expr(cfg.expr_y, t)
+        xe = _sympy_expr(_clean_sympy_expr(cfg.expr_x), t)
+        ye = _sympy_expr(_clean_sympy_expr(cfg.expr_y), t)
         return await plot_parametric_2d(
             xe, ye, t,
             t_min=cfg.t_min, t_max=cfg.t_max,
@@ -604,7 +684,7 @@ async def _render(cfg: PlotConfig) -> discord.File:
         )
 
     elif pt == "surface":
-        expr = _sympy_expr(cfg.expr_main, x, y)
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y)
         return await plot_surface(
             expr, x, y,
             x_range=(cfg.x_min, cfg.x_max),
@@ -614,7 +694,7 @@ async def _render(cfg: PlotConfig) -> discord.File:
         )
 
     elif pt == "wireframe":
-        expr = _sympy_expr(cfg.expr_main, x, y)
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y)
         return await plot_wireframe(
             expr, x, y,
             x_range=(cfg.x_min, cfg.x_max),
@@ -624,9 +704,9 @@ async def _render(cfg: PlotConfig) -> discord.File:
         )
 
     elif pt == "parametric-3d":
-        xe = _sympy_expr(cfg.expr_x, t)
-        ye = _sympy_expr(cfg.expr_y, t)
-        ze = _sympy_expr(cfg.expr_z, t)
+        xe = _sympy_expr(_clean_sympy_expr(cfg.expr_x), t)
+        ye = _sympy_expr(_clean_sympy_expr(cfg.expr_y), t)
+        ze = _sympy_expr(_clean_sympy_expr(cfg.expr_z), t)
         return await plot_parametric_3d(
             xe, ye, ze, t,
             t_min=cfg.t_min, t_max=cfg.t_max,
@@ -707,33 +787,148 @@ class PlotEngineView(ui.View):
     # ── Buttons ───────────────────────────────────────────────────────────
 
     def _add_buttons(self) -> None:
-        """Re-add all action buttons.  Called after every select rebuild."""
+        """
+        Re-add all action buttons.  Called after every select rebuild.
+
+        Layout (Discord rows 0-4, max 5 buttons per row):
+          Row 0  — plot type Select  (added by _add_type_select)
+          Row 1  — Expressions · Style · Axes & Labels · Advanced · Theme
+          Row 2  — 🔍+ · 🔍- · ⬅️ · ➡️ · ⬆️
+          Row 3  — ⬇️ · Colormap · Syntax Help · Reset View
+          Row 4  — Export · Preview · Render plot · Animate · Reset
+          Row 4* — + f(x) OR Stream ON/OFF  (conditional; shown as 5th slot
+                   when the plot type is function/vector-field — Export is
+                   dropped to make room since it fits within 5)
+
+        Note: when the conditional button is shown on row 4, Export is
+        omitted from that row to stay within the 5-button limit. Users can
+        still export via the /plot_import flow or by using the Export button
+        that appears when the conditional is absent.
+        """
 
         def _btn(label, style, row, cb):
             b = ui.Button(label=label, style=style, row=row)
             b.callback = cb
             self.add_item(b)
 
-        # Row 1 — expression / domain / style / axes
-        _btn("Expressions",  discord.ButtonStyle.primary,   1, self._on_expr)
-        _btn("Style",        discord.ButtonStyle.primary,   1, self._on_style)
-        _btn("Axes & Labels",discord.ButtonStyle.primary,   1, self._on_axes)
+        # ── Row 1: configuration modals ───────────────────────────────────
+        _btn("Expressions",   discord.ButtonStyle.primary,   1, self._on_expr)
+        _btn("Style",         discord.ButtonStyle.primary,   1, self._on_style)
+        _btn("Axes & Labels", discord.ButtonStyle.primary,   1, self._on_axes)
+        _btn("Advanced",      discord.ButtonStyle.secondary, 1, self._on_advanced)
+        _btn("Theme",         discord.ButtonStyle.secondary, 1, self._on_theme)
 
-        # Row 2 — advanced / colormap / stream toggle
-        _btn("Advanced",     discord.ButtonStyle.secondary, 2, self._on_advanced)
-        _btn("Colormap",     discord.ButtonStyle.secondary, 2, self._on_cmap)
+        # ── Row 2: zoom & pan ─────────────────────────────────────────────
+        _btn("🔍+", discord.ButtonStyle.secondary, 2, self._on_zoom_in)
+        _btn("🔍-", discord.ButtonStyle.secondary, 2, self._on_zoom_out)
+        _btn("⬅️",  discord.ButtonStyle.secondary, 2, self._on_pan_left)
+        _btn("➡️",  discord.ButtonStyle.secondary, 2, self._on_pan_right)
+        _btn("⬆️",  discord.ButtonStyle.secondary, 2, self._on_pan_up)
 
-        stream_label = "Stream: " + ("ON" if self.cfg.stream else "OFF")
-        stream_style = (discord.ButtonStyle.success
-                        if self.cfg.stream else discord.ButtonStyle.secondary)
-        _btn(stream_label, stream_style, 2, self._on_stream)
+        # ── Row 3: view utilities ─────────────────────────────────────────
+        _btn("⬇️",          discord.ButtonStyle.secondary, 3, self._on_pan_down)
+        _btn("Colormap",    discord.ButtonStyle.secondary, 3, self._on_cmap)
+        _btn("Syntax Help", discord.ButtonStyle.secondary, 3, self._on_syntax_help)
+        _btn("Reset View",  discord.ButtonStyle.danger,    3, self._on_reset_view)
+        # Row 3 has 4 buttons — room for one more if needed in future.
 
-        # Row 3 — preview / render / reset
-        _btn("Preview config", discord.ButtonStyle.secondary, 3, self._on_preview)
-        _btn("Render plot",    discord.ButtonStyle.success,   3, self._on_render)
-        _btn("Reset",          discord.ButtonStyle.danger,    3, self._on_reset)
+        # ── Row 4: actions ────────────────────────────────────────────────
+        # The conditional button (+ f(x) / Stream) occupies the 5th slot on
+        # row 4, so Export is only shown when there is no conditional button.
+        has_conditional = self.cfg.plot_type in ("function", "vector-field")
+
+        if not has_conditional:
+            _btn("Export",      discord.ButtonStyle.secondary, 4, self._on_export)
+
+        _btn("Preview",     discord.ButtonStyle.secondary, 4, self._on_preview)
+        _btn("Render plot", discord.ButtonStyle.success,   4, self._on_render)
+        _btn("Animate",     discord.ButtonStyle.success,   4, self._on_animate)
+        _btn("Reset",       discord.ButtonStyle.danger,    4, self._on_reset)
+
+        if self.cfg.plot_type == "function":
+            _btn("+ f(x)", discord.ButtonStyle.primary, 4, self._on_add_expr)
+        elif self.cfg.plot_type == "vector-field":
+            stream_label = "Stream: " + ("ON" if self.cfg.stream else "OFF")
+            stream_style = (
+                discord.ButtonStyle.success
+                if self.cfg.stream
+                else discord.ButtonStyle.secondary
+            )
+            _btn(stream_label, stream_style, 4, self._on_stream)
+
+    # ── Quick Controls ────────────────────────────────────────────────────
+
+    def _scale_domain(self, factor: float) -> None:
+        dx = (self.cfg.x_max - self.cfg.x_min) * factor
+        cx = (self.cfg.x_max + self.cfg.x_min) / 2
+        self.cfg.x_min = cx - dx / 2
+        self.cfg.x_max = cx + dx / 2
+
+        dy = (self.cfg.y_max - self.cfg.y_min) * factor
+        cy = (self.cfg.y_max + self.cfg.y_min) / 2
+        self.cfg.y_min = cy - dy / 2
+        self.cfg.y_max = cy + dy / 2
+
+        if self.cfg.plot_type in ("parametric-2d", "parametric-3d"):
+            dt = (self.cfg.t_max - self.cfg.t_min) * factor
+            ct = (self.cfg.t_max + self.cfg.t_min) / 2
+            self.cfg.t_min = max(0.0, ct - dt / 2)
+            self.cfg.t_max = ct + dt / 2
+
+    def _shift_domain(self, x_shift: float, y_shift: float) -> None:
+        dx = (self.cfg.x_max - self.cfg.x_min) * x_shift
+        self.cfg.x_min += dx
+        self.cfg.x_max += dx
+
+        dy = (self.cfg.y_max - self.cfg.y_min) * y_shift
+        self.cfg.y_min += dy
+        self.cfg.y_max += dy
+
+    async def _on_zoom_in(self, interaction: discord.Interaction) -> None:
+        self._scale_domain(0.8)
+        await self._on_preview(interaction)
+
+    async def _on_zoom_out(self, interaction: discord.Interaction) -> None:
+        self._scale_domain(1.25)
+        await self._on_preview(interaction)
+
+    async def _on_pan_left(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(-0.25, 0)
+        await self._on_preview(interaction)
+
+    async def _on_pan_right(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(0.25, 0)
+        await self._on_preview(interaction)
+
+    async def _on_pan_up(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(0, 0.25)
+        await self._on_preview(interaction)
+
+    async def _on_pan_down(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(0, -0.25)
+        await self._on_preview(interaction)
 
     # ── Button callbacks ──────────────────────────────────────────────────
+
+    async def _on_reset_view(self, interaction: discord.Interaction) -> None:
+        """
+        Restore zoom / pan (domain & t-range) to PlotConfig defaults.
+
+        Expressions, style, labels, and all other settings are preserved —
+        only the numeric domain fields are touched.
+        """
+        defaults = PlotConfig()
+        self.cfg.x_min = defaults.x_min
+        self.cfg.x_max = defaults.x_max
+        self.cfg.y_min = defaults.y_min
+        self.cfg.y_max = defaults.y_max
+        self.cfg.t_min = defaults.t_min
+        self.cfg.t_max = defaults.t_max
+        self.cfg.last_error = ""
+        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+
+    async def _on_add_expr(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(AdditionalExprModal(self.cfg, self))
 
     async def _on_expr(self,     interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(ExpressionModal(self.cfg, self))
@@ -754,9 +949,170 @@ class PlotEngineView(ui.View):
         self._add_buttons()
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
 
+    async def _on_syntax_help(self, interaction: discord.Interaction) -> None:
+        embed = discord.Embed(title="SymPy Syntax Guide", color=discord.Color.blurple())
+        embed.description = (
+            "**Basic Math**\n"
+            "`+` `-` `*` `/`\n"
+            "`**` for exponents (e.g., `x**2`). We also auto-correct `^` to `**`.\n\n"
+            "**Functions**\n"
+            "`sin(x)`, `cos(x)`, `tan(x)`\n"
+            "`exp(x)` (or `e**x`)\n"
+            "`sqrt(x)`\n"
+            "`log(x)` (natural log), `log(x, 10)` (base 10)\n\n"
+            "**Constants**\n"
+            "`pi`, `E`\n\n"
+            "**Examples**\n"
+            "`sin(x)*exp(-x)`\n"
+            "`sqrt(x**2 + y**2)`\n"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _on_export(self, interaction: discord.Interaction) -> None:
+        cfg = self.cfg
+        pt  = cfg.plot_type
+
+        embed = discord.Embed(
+            title="📋 Plot Settings Export",
+            description=(
+                f"All current settings for your **{pt}** plot.\n"
+                "Use the import string at the bottom to restore this exact configuration."
+            ),
+            color=EMBED_COLOR,
+        )
+
+        # ── Plot type & title ──────────────────────────────────────────────
+        embed.add_field(name="Plot type", value=f"`{pt}`",               inline=True)
+        embed.add_field(name="Title",     value=f"`{cfg.title or '(auto)'}`", inline=True)
+        embed.add_field(name="Theme",     value=f"`{cfg.theme}`",         inline=True)
+
+        # ── Expressions (type-specific) ────────────────────────────────────
+        if pt == "function":
+            exprs = [cfg.expr_main] + list(cfg.additional_exprs)
+            embed.add_field(
+                name="Expressions",
+                value="\n".join(f"`{e}`" for e in exprs),
+                inline=False,
+            )
+        elif pt in ("contour", "surface", "wireframe"):
+            embed.add_field(name="f(x, y)", value=f"`{cfg.expr_main}`", inline=False)
+        elif pt == "vector-field":
+            embed.add_field(name="u(x, y)", value=f"`{cfg.expr_u}`", inline=True)
+            embed.add_field(name="v(x, y)", value=f"`{cfg.expr_v}`", inline=True)
+            embed.add_field(name="Streamplot", value="yes" if cfg.stream else "no", inline=True)
+        elif pt == "parametric-2d":
+            embed.add_field(name="x(t)", value=f"`{cfg.expr_x}`", inline=True)
+            embed.add_field(name="y(t)", value=f"`{cfg.expr_y}`", inline=True)
+        elif pt == "parametric-3d":
+            embed.add_field(name="x(t)", value=f"`{cfg.expr_x}`", inline=True)
+            embed.add_field(name="y(t)", value=f"`{cfg.expr_y}`", inline=True)
+            embed.add_field(name="z(t)", value=f"`{cfg.expr_z}`", inline=True)
+        elif pt in ("scatter", "scatter-3d"):
+            embed.add_field(name="xs", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
+            embed.add_field(name="ys", value=f"`{cfg.scatter_ys[:80]}`", inline=False)
+            if pt == "scatter-3d":
+                embed.add_field(name="zs", value=f"`{cfg.scatter_zs[:80]}`", inline=False)
+
+        # ── Domain / range ─────────────────────────────────────────────────
+        if pt in ("parametric-2d", "parametric-3d"):
+            embed.add_field(
+                name="Domain",
+                value=f"t ∈ [{cfg.t_min}, {cfg.t_max}]",
+                inline=False,
+            )
+        elif pt not in ("scatter", "scatter-3d"):
+            domain_lines = [f"x ∈ [{cfg.x_min}, {cfg.x_max}]"]
+            if pt not in ("function",):
+                domain_lines.append(f"y ∈ [{cfg.y_min}, {cfg.y_max}]")
+            embed.add_field(name="Domain", value="\n".join(domain_lines), inline=False)
+
+        # ── Line / marker style ────────────────────────────────────────────
+        embed.add_field(
+            name="Line style",
+            value=(
+                f"color `{cfg.line_color}`\n"
+                f"style `{cfg.line_style}`\n"
+                f"width `{cfg.line_width}`"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Marker",
+            value=(
+                f"shape `{cfg.marker}`\n"
+                f"size  `{cfg.marker_size}`"
+            ),
+            inline=True,
+        )
+
+        # ── Surface / contour style ────────────────────────────────────────
+        embed.add_field(
+            name="Color & opacity",
+            value=(
+                f"colormap `{cfg.colormap}`\n"
+                f"alpha    `{cfg.alpha}`\n"
+                f"levels   `{cfg.levels}` *(contour only)*"
+            ),
+            inline=True,
+        )
+
+        # ── Axes labels ────────────────────────────────────────────────────
+        embed.add_field(
+            name="Axis labels",
+            value=(
+                f"x `{cfg.xlabel}`  "
+                f"y `{cfg.ylabel}`  "
+                f"z `{cfg.zlabel}`\n"
+                f"grid `{'yes' if cfg.show_grid else 'no'}`"
+            ),
+            inline=False,
+        )
+
+        # ── Figure & render ────────────────────────────────────────────────
+        embed.add_field(
+            name="Figure",
+            value=(
+                f"size `{cfg.fig_width} × {cfg.fig_height}` in\n"
+                f"dpi  `{cfg.dpi}`\n"
+                f"res  `{cfg.resolution}`"
+            ),
+            inline=True,
+        )
+
+        # ── Animation ─────────────────────────────────────────────────────
+        if cfg.anim_param:
+            embed.add_field(
+                name="Animation param",
+                value=f"`{cfg.anim_param}`",
+                inline=True,
+            )
+
+        # ── Import string ──────────────────────────────────────────────────
+        # Wrapped in ''' ... ''' so Discord renders a copy button on the block.
+        import_string = cfg.export_config()
+        embed.add_field(
+            name="Import string  (copy → `/plot_import`)",
+            value=f"'''{import_string}'''",
+            inline=False,
+        )
+
+        embed.set_footer(text="Settings are ephemeral — only you can see this message.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _on_theme(self, interaction: discord.Interaction) -> None:
+        view = ThemePickerView(self.cfg, parent=self)
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Choose a Theme",
+                description="Select a global theme preset for your plot.",
+                color=EMBED_COLOR,
+            ),
+            view=view,
+        )
+
     async def _on_cmap(self, interaction: discord.Interaction) -> None:
-        view = ColormapPickerView(self.cfg, parent=self, panel_message=interaction.message)
-        await interaction.response.send_message(
+        view = ColormapPickerView(self.cfg, parent=self)
+        await interaction.response.edit_message(
             embed=discord.Embed(
                 title="Choose a Colormap",
                 description=(
@@ -766,11 +1122,38 @@ class PlotEngineView(ui.View):
                 color=EMBED_COLOR,
             ),
             view=view,
-            ephemeral=True,
         )
 
     async def _on_preview(self, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+
+    async def _on_animate(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(AnimationParamModal(self.cfg, self))
+
+    async def _render_animation(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            from utils.plotter import plot_animation_function
+            file = await plot_animation_function(self.cfg)
+            self.cfg.last_error = ""
+        except Exception as exc:
+            self.cfg.last_error = str(exc)
+            await interaction.edit_original_response(embed=_config_embed(self.cfg), view=self)
+            await interaction.followup.send(f"⚠ Animation failed: {exc}", ephemeral=True)
+            return
+
+        await interaction.edit_original_response(embed=_config_embed(self.cfg), view=self)
+
+        embed_out = discord.Embed(
+            title=self.cfg.title or f"{self.cfg.plot_type} animation",
+            color=EMBED_COLOR,
+        )
+        embed_out.set_image(url=f"attachment://{file.filename}")
+        embed_out.set_footer(
+            text=(f"type={self.cfg.plot_type} | theme={self.cfg.theme} | "
+                  f"anim_param={self.cfg.anim_param}")
+        )
+        await interaction.channel.send(embed=embed_out, file=file)
 
     async def _on_render(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -779,14 +1162,14 @@ class PlotEngineView(ui.View):
             self.cfg.last_error = ""
         except Exception as exc:
             self.cfg.last_error = str(exc)
-            await interaction.message.edit(embed=_config_embed(self.cfg), view=self)
+            await interaction.edit_original_response(embed=_config_embed(self.cfg), view=self)
             await interaction.followup.send(
                 f"⚠ Render failed: {exc}", ephemeral=True,
             )
             return
 
         # Update the control-panel embed to clear any previous error.
-        await interaction.message.edit(
+        await interaction.edit_original_response(
             embed=_config_embed(self.cfg),
             view=self,
         )
@@ -817,6 +1200,35 @@ class PlotEngineView(ui.View):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Theme picker — secondary ephemeral view
+# ─────────────────────────────────────────────────────────────────────────────
+
+THEMES = ["default", "dark", "academic", "cyberpunk", "seaborn"]
+
+class ThemePickerView(ui.View):
+    def __init__(self, cfg: PlotConfig, parent: PlotEngineView) -> None:
+        super().__init__(timeout=180)
+        self._cfg = cfg
+        self._parent = parent
+        self._build()
+
+    def _build(self) -> None:
+        options = [
+            discord.SelectOption(label=t, value=t, default=(t == self._cfg.theme))
+            for t in THEMES
+        ]
+        sel = ui.Select(placeholder="Pick a theme…", options=options)
+        sel.callback = self._on_pick
+        self.add_item(sel)
+
+    async def _on_pick(self, interaction: discord.Interaction) -> None:
+        self._cfg.theme = interaction.data["values"][0]
+        self._parent.clear_items()
+        self._parent._add_type_select()
+        self._parent._add_buttons()
+        await interaction.response.edit_message(embed=_config_embed(self._cfg), view=self._parent)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Colormap picker — secondary ephemeral view
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -825,11 +1237,10 @@ class ColormapPickerView(ui.View):
 
     PAGE_SIZE = 25
 
-    def __init__(self, cfg: PlotConfig, parent: PlotEngineView, panel_message: discord.Message) -> None:
+    def __init__(self, cfg: PlotConfig, parent: PlotEngineView) -> None:
         super().__init__(timeout=120)
         self._cfg    = cfg
         self._parent = parent
-        self._panel_message = panel_message
         self._page   = 0
         self._build()
 
@@ -859,10 +1270,7 @@ class ColormapPickerView(ui.View):
         self._parent.clear_items()
         self._parent._add_type_select()
         self._parent._add_buttons()
-        await self._panel_message.edit(embed=_config_embed(self._cfg), view=self._parent)
-        await interaction.response.edit_message(
-            content=f"Colormap set to `{self._cfg.colormap}`.", view=None
-        )
+        await interaction.response.edit_message(embed=_config_embed(self._cfg), view=self._parent)
 
     async def _on_prev(self, interaction: discord.Interaction) -> None:
         self._page -= 1
@@ -892,6 +1300,28 @@ class PlotEngine(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+
+    # ── /plot_import ───────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="plot_import",
+        description="Import a shared PlotEngine configuration.",
+    )
+    async def plot_import(self, interaction: discord.Interaction, config_string: str) -> None:
+        try:
+            cfg = PlotConfig.import_config(config_string.strip())
+        except Exception as exc:
+            await interaction.response.send_message(f"⚠ Invalid config string: {exc}", ephemeral=True)
+            return
+
+        view = PlotEngineView(cfg)
+        view._add_buttons()
+
+        await interaction.response.send_message(
+            embed=_config_embed(cfg),
+            view=view,
+            ephemeral=True,
+        )
 
     # ── /plot ──────────────────────────────────────────────────────────────
 

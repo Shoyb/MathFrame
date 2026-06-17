@@ -175,6 +175,7 @@ class StyleOptions:
     marker:     Optional[str] = None
     marker_size: float = 6.0
     colormap:   str   = "viridis"
+    theme:      str   = "default"
     alpha:      float = 0.9
     show_grid:  bool  = True
     dpi:        int   = 150
@@ -184,11 +185,8 @@ class StyleOptions:
     def rc_overrides(self) -> Dict:
         """
         Return a dict suitable for ``matplotlib.rc_context(rc=...)``.
-
-        Using rc_context keeps overrides thread-local to the current
-        blocking call so concurrent renders never interfere.
         """
-        return {
+        overrides = {
             "lines.linewidth":  self.line_width,
             "lines.linestyle":  self.line_style,
             "lines.color":      self.color,
@@ -199,6 +197,51 @@ class StyleOptions:
             "grid.alpha":       0.3,
             "figure.dpi":       self.dpi,
         }
+        
+        if self.theme == "dark":
+            overrides.update({
+                "axes.facecolor": "#2c2f33",
+                "figure.facecolor": "#2c2f33",
+                "axes.edgecolor": "#ffffff",
+                "axes.labelcolor": "#ffffff",
+                "text.color": "#ffffff",
+                "xtick.color": "#ffffff",
+                "ytick.color": "#ffffff",
+                "grid.color": "#ffffff",
+            })
+        elif self.theme == "cyberpunk":
+            overrides.update({
+                "axes.facecolor": "#212946",
+                "figure.facecolor": "#212946",
+                "axes.edgecolor": "#08F7FE",
+                "axes.labelcolor": "#08F7FE",
+                "text.color": "#08F7FE",
+                "xtick.color": "#08F7FE",
+                "ytick.color": "#08F7FE",
+                "grid.color": "#08F7FE",
+                "lines.linewidth": 3.0,
+            })
+        elif self.theme == "academic":
+            overrides.update({
+                "font.family": "serif",
+                "mathtext.fontset": "cm",
+                "axes.facecolor": "#ffffff",
+                "figure.facecolor": "#ffffff",
+                "axes.grid": True,
+                "grid.color": "#cccccc",
+                "grid.linestyle": "--",
+            })
+        elif self.theme == "seaborn":
+            overrides.update({
+                "axes.facecolor": "#EAEAF2",
+                "figure.facecolor": "white",
+                "axes.edgecolor": "white",
+                "grid.color": "white",
+                "grid.linestyle": "-",
+                "axes.axisbelow": True,
+            })
+            
+        return overrides
 
 
 # Default style instance — used when callers don't supply one.
@@ -340,16 +383,16 @@ def _white_fig(style: StyleOptions, **kw) -> Tuple[plt.Figure, plt.Axes]:
     """Create a white-background figure + axes pair, sized from *style*."""
     kw.setdefault("figsize", (style.fig_width, style.fig_height))
     fig, ax = plt.subplots(**kw)
-    fig.patch.set_facecolor("white")
+    # Facecolor is handled by rcParams
     return fig, ax
 
 
 def _make_3d_axes(style: StyleOptions) -> Tuple[plt.Figure, "Axes3D"]:
     """Create a white-background figure with a 3-D projection axes."""
     fig = plt.figure(figsize=(style.fig_width, style.fig_height))
-    fig.patch.set_facecolor("white")
+    # Facecolor is handled by rcParams
     ax  = fig.add_subplot(111, projection="3d")
-    ax.set_facecolor("white")
+    # Facecolor is handled by rcParams
     return fig, ax
 
 
@@ -419,6 +462,7 @@ def _plot_function_blocking(
     x_max: float,
     title: str,
     style: StyleOptions,
+    additional_exprs: list = None,
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
         f  = _lambdify1(expr, var)
@@ -426,9 +470,16 @@ def _plot_function_blocking(
         ys = _eval1(f, xs)
 
         fig, ax = _white_fig(style)
-        ax.set_facecolor("white")
-        ax.plot(xs, ys)
+        ax.plot(xs, ys, label=str(expr))
         _apply_line_style(ax, style)
+        
+        if additional_exprs:
+            for extra in additional_exprs:
+                f_extra = _lambdify1(extra, var)
+                ys_extra = _eval1(f_extra, xs)
+                ax.plot(xs, ys_extra, label=str(extra))
+            ax.legend(loc="upper right")
+            
         _apply_axes_style(ax, title or str(expr), str(var), f"f({var})", style.show_grid)
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
@@ -444,7 +495,7 @@ def _plot_points_blocking(
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
         fig, ax = _white_fig(style)
-        ax.set_facecolor("white")
+        # Facecolor is handled by rcParams
         ax.scatter(
             np.asarray(xs, float),
             np.asarray(ys, float),
@@ -474,7 +525,7 @@ def _plot_contour_blocking(
         Z    = _eval2(_lambdify2(expr, x_var, y_var), X, Y)
 
         fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
-        ax.set_facecolor("white")
+        # Facecolor is handled by rcParams
 
         cf = ax.contourf(X, Y, Z, levels=levels, cmap=style.colormap, alpha=0.85)
         ax.contour(X, Y, Z, levels=levels, colors="k", linewidths=0.4, alpha=0.4)
@@ -518,7 +569,7 @@ def _plot_vector_field_blocking(
         mag_safe = np.where(mag == 0, 1, mag)
 
         fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
-        ax.set_facecolor("white")
+        # Facecolor is handled by rcParams
 
         if stream:
             sp = ax.streamplot(
@@ -565,7 +616,7 @@ def _plot_parametric_2d_blocking(
             ys = np.asarray(fy(ts), dtype=float)
 
         fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
-        ax.set_facecolor("white")
+        # Facecolor is handled by rcParams
 
         points = np.array([xs, ys]).T.reshape(-1, 1, 2)
         segs   = np.concatenate([points[:-1], points[1:]], axis=1)
@@ -827,7 +878,7 @@ def _plot_multi_blocking(
             figsize=(fig_width, row_height * nrows),
             squeeze=False,
         )
-        fig.patch.set_facecolor("white")
+        # Facecolor is handled by rcParams
 
         flat = axes.flatten()
         for i, spec in enumerate(specs):
@@ -855,6 +906,7 @@ async def plot_function(
     x_max: float = 10.0,
     title: str   = "",
     style: StyleOptions = _DEFAULT_STYLE,
+    additional_exprs: list = None,
 ) -> discord.File:
     """
     Plot a SymPy expression as a line graph.
@@ -880,7 +932,7 @@ async def plot_function(
     if x_min >= x_max:
         raise ValueError(f"x_min ({x_min}) must be < x_max ({x_max}).")
     buf = await _run_blocking(
-        _plot_function_blocking, expr, var, x_min, x_max, title, style,
+        _plot_function_blocking, expr, var, x_min, x_max, title, style, additional_exprs,
     )
     return discord.File(buf, filename="plot.png")
 
@@ -1257,6 +1309,87 @@ async def plot_multi(
 # ---------------------------------------------------------------------------
 # Public exports
 # ---------------------------------------------------------------------------
+
+
+from matplotlib.animation import FuncAnimation, PillowWriter
+
+def _plot_animation_function_blocking(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    anim_var: sympy.Symbol,
+    x_min: float,
+    x_max: float,
+    title: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        fig, ax = _white_fig(style)
+        xs = np.linspace(x_min, x_max, PLOT_POINTS)
+        line, = ax.plot([], [])
+        _apply_line_style(ax, style)
+        _apply_axes_style(ax, title or str(expr), str(var), f"f({var})", style.show_grid)
+
+        frames = 30
+        anim_min, anim_max = 0, 10
+        a_vals = np.linspace(anim_min, anim_max, frames)
+
+        # we need to pre-compute y limits or autoscale on the fly
+        f = _lambdify2(expr, var, anim_var)
+        
+        all_ys = []
+        for a in a_vals:
+            ys = _eval1(lambda x: f(x, a), xs)
+            all_ys.append(ys)
+        
+        flat_ys = np.concatenate(all_ys)
+        valid = flat_ys[np.isfinite(flat_ys)]
+        if len(valid) > 0:
+            ax.set_ylim(valid.min() - 0.5, valid.max() + 0.5)
+        ax.set_xlim(x_min, x_max)
+
+        def init():
+            line.set_data([], [])
+            return line,
+
+        def update(frame_idx):
+            line.set_data(xs, all_ys[frame_idx])
+            ax.set_title(f"{title or str(expr)} ({anim_var}={a_vals[frame_idx]:.2f})")
+            return line,
+
+        ani = FuncAnimation(fig, update, frames=frames, init_func=init, blit=False)
+        
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
+            tmp_name = tmp.name
+
+        try:
+            writer = PillowWriter(fps=15)
+            ani.save(tmp_name, writer=writer)
+            with open(tmp_name, "rb") as f:
+                buf = io.BytesIO(f.read())
+        finally:
+            if os.path.exists(tmp_name):
+                os.remove(tmp_name)
+
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+
+async def plot_animation_function(cfg) -> discord.File:
+    import sympy
+    x = sympy.Symbol("x")
+    from cogs.plot_engine import _clean_sympy_expr, _sympy_expr
+    expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, sympy.Symbol(cfg.anim_param or "a"))
+    anim_var = sympy.Symbol(cfg.anim_param or "a")
+    
+    buf = await _run_blocking(
+        _plot_animation_function_blocking,
+        expr, x, anim_var, cfg.x_min, cfg.x_max, cfg.title, cfg.to_style()
+    )
+    return discord.File(buf, filename="anim.gif")
+
 
 __all__ = [
     # Data classes
