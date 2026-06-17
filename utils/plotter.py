@@ -1314,7 +1314,7 @@ async def plot_multi(
 from matplotlib.animation import FuncAnimation, PillowWriter
 
 def _plot_animation_function_blocking(
-    expr: sympy.Expr,
+    exprs: list,
     var: sympy.Symbol,
     anim_var: sympy.Symbol,
     x_min: float,
@@ -1325,36 +1325,47 @@ def _plot_animation_function_blocking(
     with matplotlib.rc_context(rc=style.rc_overrides()):
         fig, ax = _white_fig(style)
         xs = np.linspace(x_min, x_max, PLOT_POINTS)
-        line, = ax.plot([], [])
-        _apply_line_style(ax, style)
-        _apply_axes_style(ax, title or str(expr), str(var), f"f({var})", style.show_grid)
+
+        # One Line2D + one lambdified (var, anim_var) callable per expression,
+        # mirroring how _plot_function_blocking handles additional_exprs.
+        lines = [ax.plot([], [], label=str(expr))[0] for expr in exprs]
+        funcs = [_lambdify2(expr, var, anim_var) for expr in exprs]
+
+        if len(exprs) == 1:
+            _apply_line_style(ax, style)
+        else:
+            ax.legend(loc="upper right")
+
+        combined_title = title or ", ".join(str(e) for e in exprs)
+        _apply_axes_style(ax, combined_title, str(var), f"f({var})", style.show_grid)
 
         frames = 30
         anim_min, anim_max = 0, 10
         a_vals = np.linspace(anim_min, anim_max, frames)
 
-        # we need to pre-compute y limits or autoscale on the fly
-        f = _lambdify2(expr, var, anim_var)
-        
-        all_ys = []
-        for a in a_vals:
-            ys = _eval1(lambda x: f(x, a), xs)
-            all_ys.append(ys)
-        
-        flat_ys = np.concatenate(all_ys)
+        # Pre-compute y-values for every function at every frame so we can
+        # both autoscale the y-axis up front and animate without recomputing.
+        all_ys = [
+            [_eval1(lambda x, f=f, a=a: f(x, a), xs) for a in a_vals]
+            for f in funcs
+        ]
+
+        flat_ys = np.concatenate([np.concatenate(per_func) for per_func in all_ys])
         valid = flat_ys[np.isfinite(flat_ys)]
         if len(valid) > 0:
             ax.set_ylim(valid.min() - 0.5, valid.max() + 0.5)
         ax.set_xlim(x_min, x_max)
 
         def init():
-            line.set_data([], [])
-            return line,
+            for line in lines:
+                line.set_data([], [])
+            return lines
 
         def update(frame_idx):
-            line.set_data(xs, all_ys[frame_idx])
-            ax.set_title(f"{title or str(expr)} ({anim_var}={a_vals[frame_idx]:.2f})")
-            return line,
+            for line, per_func in zip(lines, all_ys):
+                line.set_data(xs, per_func[frame_idx])
+            ax.set_title(f"{combined_title} ({anim_var}={a_vals[frame_idx]:.2f})")
+            return lines
 
         ani = FuncAnimation(fig, update, frames=frames, init_func=init, blit=False)
         
@@ -1381,14 +1392,21 @@ async def plot_animation_function(cfg) -> discord.File:
     import sympy
     x = sympy.Symbol("x")
     from cogs.plot_engine import _clean_sympy_expr, _sympy_expr
-    expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, sympy.Symbol(cfg.anim_param or "a"))
     anim_var = sympy.Symbol(cfg.anim_param or "a")
-    
+
+    exprs = [_sympy_expr(_clean_sympy_expr(cfg.expr_main), x, anim_var)]
+    for e in cfg.additional_exprs:
+        try:
+            exprs.append(_sympy_expr(_clean_sympy_expr(e), x, anim_var))
+        except Exception:
+            pass  # skip unparsable extras, same as the static multi-plot path
+
     buf = await _run_blocking(
         _plot_animation_function_blocking,
-        expr, x, anim_var, cfg.x_min, cfg.x_max, cfg.title, cfg.to_style()
+        exprs, x, anim_var, cfg.x_min, cfg.x_max, cfg.title, cfg.to_style()
     )
     return discord.File(buf, filename="anim.gif")
+
 
 
 __all__ = [

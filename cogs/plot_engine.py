@@ -22,7 +22,6 @@ Note: /plot from cogs/calculus.py has been removed.  All plotting lives here.
         │  [Button] Advanced      → Modal: resolution, alpha, colormap, figsize
         │  [Button] Colormap      → Sub-view: colormap picker
         │  [Button] Stream ON/OFF → Toggle streamplot for vector fields
-        │  [Button] Preview       → Refresh embed with current state
         │  [Button] Render        → Generate PNG and post publicly
         └── [Button] Reset        → Restore defaults (keep plot type)
 
@@ -231,9 +230,21 @@ class PlotConfig:
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Matches a leading "y =", "z =", "f(x) =", "f(x, y) =" style label before
+# the real expression. Requires the left side to be a bare identifier
+# (optionally followed by a parenthesised arg list) so we never mangle an
+# actual equation like "x**2 + y**2 = 25", and the negative lookahead on
+# "=" keeps comparisons (==, <=, >=, !=) untouched.
+_ASSIGNMENT_PREFIX_RE = re.compile(r'^\s*[A-Za-z_]\w*\s*(?:\([^)]*\))?\s*=(?!=)\s*(.+)$')
+
+
 def _clean_sympy_expr(s: str) -> str:
     """Smart auto-correction for common syntax errors."""
     if not s: return ""
+    s = s.strip()
+    m = _ASSIGNMENT_PREFIX_RE.match(s)
+    if m:
+        s = m.group(1).strip()
     s = s.replace("^", "**")
     s = re.sub(r'\be\^', 'exp', s)
     s = re.sub(r'\be\*\*', 'exp', s)
@@ -795,15 +806,9 @@ class PlotEngineView(ui.View):
           Row 1  — Expressions · Style · Axes & Labels · Advanced · Theme
           Row 2  — 🔍+ · 🔍- · ⬅️ · ➡️ · ⬆️
           Row 3  — ⬇️ · Colormap · Syntax Help · Reset View
-          Row 4  — Export · Preview · Render plot · Animate · Reset
-          Row 4* — + f(x) OR Stream ON/OFF  (conditional; shown as 5th slot
-                   when the plot type is function/vector-field — Export is
-                   dropped to make room since it fits within 5)
-
-        Note: when the conditional button is shown on row 4, Export is
-        omitted from that row to stay within the 5-button limit. Users can
-        still export via the /plot_import flow or by using the Export button
-        that appears when the conditional is absent.
+          Row 4  — Export · Render plot · Animate · Reset
+          Row 4* — + f(x) OR Stream ON/OFF  (conditional 5th slot, shown
+                   when the plot type is function/vector-field)
         """
 
         def _btn(label, style, row, cb):
@@ -833,14 +838,9 @@ class PlotEngineView(ui.View):
         # Row 3 has 4 buttons — room for one more if needed in future.
 
         # ── Row 4: actions ────────────────────────────────────────────────
-        # The conditional button (+ f(x) / Stream) occupies the 5th slot on
-        # row 4, so Export is only shown when there is no conditional button.
-        has_conditional = self.cfg.plot_type in ("function", "vector-field")
-
-        if not has_conditional:
-            _btn("Export",      discord.ButtonStyle.secondary, 4, self._on_export)
-
-        _btn("Preview",     discord.ButtonStyle.secondary, 4, self._on_preview)
+        # Export, Render plot, Animate, Reset always show; the conditional
+        # button (+ f(x) / Stream) occupies the 5th slot when present.
+        _btn("Export",      discord.ButtonStyle.secondary, 4, self._on_export)
         _btn("Render plot", discord.ButtonStyle.success,   4, self._on_render)
         _btn("Animate",     discord.ButtonStyle.success,   4, self._on_animate)
         _btn("Reset",       discord.ButtonStyle.danger,    4, self._on_reset)
