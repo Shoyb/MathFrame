@@ -9,84 +9,6 @@ matplotlib work runs inside a thread-pool executor so it never stalls
 the event loop.  Each blocking call uses ``matplotlib.rc_context`` so
 that style overrides are fully isolated — concurrent renders never
 clobber each other's rcParams.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Public API
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-2-D single-variable
-    plot_function       — line plot of f(x)
-    plot_points         — scatter plot of (xs, ys) data
-
-2-D multi-variable
-    plot_contour        — filled contour map of f(x, y)
-    plot_vector_field   — 2-D quiver / streamplot of a vector field
-    plot_parametric_2d  — parametric curve (x(t), y(t))
-
-3-D
-    plot_surface        — 3-D surface of f(x, y)
-    plot_wireframe      — 3-D wireframe of f(x, y)
-    plot_parametric_3d  — 3-D parametric curve (x(t), y(t), z(t))
-    plot_scatter_3d     — 3-D scatter of (xs, ys, zs) data
-
-Multi-panel
-    plot_multi          — arbitrary grid of sub-plots from a list of
-                          PlotSpec descriptors
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Adding a new plot type
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1. Write a ``_plot_<name>_blocking(...)`` function that accepts plain
-   Python / NumPy / SymPy arguments, builds a matplotlib Figure, and
-   returns ``_save_fig_to_bytes(fig)``.  Accept a ``style: StyleOptions``
-   keyword argument and pass it to ``_apply_line_style`` / ``_apply_axes_style``
-   as appropriate.
-
-2. Write the matching ``async def plot_<name>(...)`` public coroutine
-   that validates inputs, calls ``loop.run_in_executor(_plot_executor,
-   _plot_<name>_blocking, ...)`` inside ``_run_blocking``, and returns a
-   ``discord.File``.
-
-3. If the type can appear inside ``plot_multi``, add a branch for it in
-   ``_render_spec_onto_axes`` and add the ``kind`` string to the docstring
-   of ``PlotSpec``.
-
-4. Export the new function in ``__all__`` at the bottom of this file.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Usage
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-::
-
-    from utils.plotter import (
-        plot_function, plot_points,
-        plot_contour, plot_vector_field, plot_parametric_2d,
-        plot_surface, plot_wireframe, plot_parametric_3d, plot_scatter_3d,
-        plot_multi, PlotSpec, StyleOptions,
-    )
-
-    import sympy
-    x = sympy.Symbol("x")
-
-    # Line plot with custom style
-    style = StyleOptions(color="#e74c3c", line_width=2.5)
-    file  = await plot_function(sympy.sin(x) / x, x, title="sinc(x)", style=style)
-
-    # 3-D surface
-    x, y = sympy.symbols("x y")
-    file  = await plot_surface(sympy.sin(x) * sympy.cos(y), x, y, title="sin·cos")
-
-    # Multi-panel (2×2 grid)
-    specs = [
-        PlotSpec("function",  expr=sympy.sin(x), var=x, title="sin(x)"),
-        PlotSpec("function",  expr=sympy.cos(x), var=x, title="cos(x)"),
-        PlotSpec("contour",   expr=x**2 + y**2,  x_var=x, y_var=y, title="Paraboloid"),
-        PlotSpec("points",    xs=[1,2,3], ys=[1,4,9], title="y=x²"),
-    ]
-    file = await plot_multi(specs, ncols=2, title="Gallery")
-
-    await interaction.followup.send(file=file)
 """
 
 from __future__ import annotations
@@ -116,59 +38,24 @@ from mpl_toolkits.mplot3d import Axes3D               # noqa: F401 (registers pr
 
 PLOT_POINTS  = 800    # x-samples for 1-D line plots
 GRID_POINTS  = 120    # grid resolution for 2-D / 3-D surface plots
-Y_CLIP       = 1e6    # clip |y| beyond this for 1-D plots
+Y_CLIP       = 1e6    # hard clip for values outside smart auto-range
 Z_CLIP       = 1e6    # clip |z| beyond this for surface plots
 PARAM_POINTS = 1000   # t-samples for parametric curves
 
-# Worker pool — 4 threads is enough; matplotlib is CPU-bound not I/O-bound.
+ANIM_FRAMES      = 30
+ANIM_PARAM_MIN   = 0.0
+ANIM_PARAM_MAX   = 10.0
+ANIM_GRID_POINTS = 70
+ANIM_PARAM_POINTS = 400
+
 _plot_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plotter")
 
 # ---------------------------------------------------------------------------
-# StyleOptions — centralised style bag passed into every blocking function
+# StyleOptions
 # ---------------------------------------------------------------------------
 
 @dataclass
 class StyleOptions:
-    """
-    All visual style knobs that can be applied to a plot.
-
-    Every public plotting function accepts an optional ``style`` keyword
-    argument of this type.  Defaults reproduce the original bot appearance.
-    Fields that don't apply to a particular plot type are silently ignored.
-
-    Attributes
-    ----------
-    color : str
-        Line / scatter colour (matplotlib colour string or hex).
-    line_width : float
-        Stroke width for lines and wireframes.
-    line_style : str
-        Matplotlib line-style string: ``"-"``, ``"--"``, ``":"`, ``"-."``.
-    marker : str | None
-        Marker style.  ``None`` means no markers.
-    marker_size : float
-        Marker diameter in points.
-    colormap : str
-        Named matplotlib colormap used for surfaces, contours, vector fields,
-        parametric curves, and 3-D scatter.
-    alpha : float
-        Opacity 0–1 for surfaces.
-    show_grid : bool
-        Whether to draw a background grid.
-    dpi : int
-        Output resolution for the saved PNG.
-    fig_width : float
-        Figure width in inches.
-    fig_height : float
-        Figure height in inches.
-
-    Notes
-    -----
-    Add new style fields here as the bot grows — every blocking function
-    already receives the whole ``StyleOptions`` object, so new fields are
-    available everywhere without changing any call sites.
-    """
-
     color:      str   = "#1f77b4"
     line_width: float = 2.0
     line_style: str   = "-"
@@ -182,10 +69,16 @@ class StyleOptions:
     fig_width:  float = 8.0
     fig_height: float = 4.5
 
+    x_log: bool = False
+    y_log: bool = False
+
+    fill_below: bool = False
+    fill_color: str  = ""
+
+    x_lim: Optional[Tuple[float, float]] = None
+    y_lim: Optional[Tuple[float, float]] = None
+
     def rc_overrides(self) -> Dict:
-        """
-        Return a dict suitable for ``matplotlib.rc_context(rc=...)``.
-        """
         overrides = {
             "lines.linewidth":  self.line_width,
             "lines.linestyle":  self.line_style,
@@ -197,7 +90,7 @@ class StyleOptions:
             "grid.alpha":       0.3,
             "figure.dpi":       self.dpi,
         }
-        
+
         if self.theme == "dark":
             overrides.update({
                 "axes.facecolor": "#2c2f33",
@@ -240,15 +133,14 @@ class StyleOptions:
                 "grid.linestyle": "-",
                 "axes.axisbelow": True,
             })
-            
+
         return overrides
 
 
-# Default style instance — used when callers don't supply one.
 _DEFAULT_STYLE = StyleOptions()
 
 # ---------------------------------------------------------------------------
-# PlotSpec — descriptor for multi-panel plots
+# PlotSpec
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -256,53 +148,21 @@ class PlotSpec:
     """
     Descriptor for one sub-plot panel inside :func:`plot_multi`.
 
-    Parameters
-    ----------
     kind : str
         One of ``"function"``, ``"points"``, ``"contour"``,
-        ``"vector_field"``, ``"parametric_2d"``.
-
-        .. note::
-            3-D kinds (``"surface"``, ``"wireframe"``, ``"parametric_3d"``,
-            ``"scatter_3d"``) cannot be mixed into a ``plot_multi`` grid
-            because matplotlib's subplot grid does not support mixed 2-D/3-D
-            projections.  Use the dedicated 3-D async functions for those.
-
-    title : str
-        Sub-plot title.
-    style : StyleOptions | None
-        Per-panel style override; ``None`` inherits the grid's default style.
-
-    2-D single-variable (kind="function")
-        expr, var, x_min, x_max
-
-    Scatter (kind="points")
-        xs, ys, xlabel, ylabel
-
-    2-D multivariable (kind="contour")
-        expr, x_var, y_var, x_range, y_range
-
-    Vector field (kind="vector_field")
-        u_expr, v_expr, x_var, y_var, x_range, y_range,
-        stream (bool) — use streamplot instead of quiver
-
-    Parametric 2-D (kind="parametric_2d")
-        x_expr, y_expr, t_var, t_min, t_max, xlabel, ylabel
+        ``"vector_field"``, ``"parametric_2d"``, ``"polar"``.
     """
 
     kind: str
 
-    # shared
     title: str = ""
-    style: Optional[StyleOptions] = None   # None → use caller's default
+    style: Optional[StyleOptions] = None
 
-    # 1-D function
     expr: Optional[sympy.Expr] = None
     var:  Optional[sympy.Symbol] = None
     x_min: float = -10.0
     x_max: float  = 10.0
 
-    # scatter / points
     xs: Optional[list] = None
     ys: Optional[list] = None
     zs: Optional[list] = None
@@ -310,18 +170,15 @@ class PlotSpec:
     ylabel: str = "y"
     zlabel: str = "z"
 
-    # 2-D / 3-D multivariable
     x_var: Optional[sympy.Symbol] = None
     y_var: Optional[sympy.Symbol] = None
     x_range: Tuple[float, float] = (-5.0, 5.0)
     y_range: Tuple[float, float] = (-5.0, 5.0)
 
-    # vector field
     u_expr: Optional[sympy.Expr] = None
     v_expr: Optional[sympy.Expr] = None
     stream: bool = False
 
-    # parametric
     x_expr: Optional[sympy.Expr] = None
     y_expr: Optional[sympy.Expr] = None
     z_expr: Optional[sympy.Expr] = None
@@ -329,10 +186,22 @@ class PlotSpec:
     t_min:  float = 0.0
     t_max:  float = 2 * float(sympy.pi)
 
+    additional_exprs: List[sympy.Expr] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _to_math_label(s: str) -> str:
+    if not s:
+        return s
+    try:
+        parsed = sympy.sympify(s)
+        return f"${sympy.latex(parsed)}$"
+    except Exception:
+        return s
+
 
 def _apply_axes_style(
     ax: plt.Axes,
@@ -340,24 +209,27 @@ def _apply_axes_style(
     xlabel: str,
     ylabel: str,
     show_grid: bool = True,
+    style: Optional[StyleOptions] = None,
 ) -> None:
-    """Apply the bot's standard 2-D axes style."""
     ax.axhline(0, color="gray", linewidth=0.5)
     ax.axvline(0, color="gray", linewidth=0.5)
     ax.grid(show_grid, alpha=0.3)
-    ax.set_title(title, fontsize=12, pad=6)
-    ax.set_xlabel(xlabel, fontsize=10)
-    ax.set_ylabel(ylabel, fontsize=10)
+    ax.set_title(_to_math_label(title), fontsize=12, pad=6)
+    ax.set_xlabel(_to_math_label(xlabel), fontsize=10)
+    ax.set_ylabel(_to_math_label(ylabel), fontsize=10)
+
+    if style is not None:
+        if style.x_log:
+            ax.set_xscale("log")
+        if style.y_log:
+            ax.set_yscale("log")
+        if style.x_lim is not None:
+            ax.set_xlim(*style.x_lim)
+        if style.y_lim is not None:
+            ax.set_ylim(*style.y_lim)
 
 
 def _apply_line_style(ax: plt.Axes, style: StyleOptions) -> None:
-    """
-    Retroactively apply line style to the most-recently-added Line2D on *ax*.
-
-    Call this right after ``ax.plot(...)`` to honour per-call style options
-    without relying solely on rcParams (which are set via rc_context anyway,
-    but an explicit override makes the intent crystal-clear).
-    """
     if not ax.lines:
         return
     line = ax.lines[-1]
@@ -370,7 +242,6 @@ def _apply_line_style(ax: plt.Axes, style: StyleOptions) -> None:
 
 
 def _save_fig_to_bytes(fig: plt.Figure, dpi: int = 150) -> io.BytesIO:
-    """Save *fig* to a PNG BytesIO buffer and close the figure."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi,
                 facecolor=fig.get_facecolor())
@@ -380,19 +251,14 @@ def _save_fig_to_bytes(fig: plt.Figure, dpi: int = 150) -> io.BytesIO:
 
 
 def _white_fig(style: StyleOptions, **kw) -> Tuple[plt.Figure, plt.Axes]:
-    """Create a white-background figure + axes pair, sized from *style*."""
     kw.setdefault("figsize", (style.fig_width, style.fig_height))
     fig, ax = plt.subplots(**kw)
-    # Facecolor is handled by rcParams
     return fig, ax
 
 
 def _make_3d_axes(style: StyleOptions) -> Tuple[plt.Figure, "Axes3D"]:
-    """Create a white-background figure with a 3-D projection axes."""
     fig = plt.figure(figsize=(style.fig_width, style.fig_height))
-    # Facecolor is handled by rcParams
     ax  = fig.add_subplot(111, projection="3d")
-    # Facecolor is handled by rcParams
     return fig, ax
 
 
@@ -404,6 +270,13 @@ def _lambdify2(expr: sympy.Expr,
                xv: sympy.Symbol,
                yv: sympy.Symbol) -> Callable:
     return sympy.lambdify((xv, yv), expr, modules=["numpy"])
+
+
+def _lambdify3(expr: sympy.Expr,
+               av: sympy.Symbol,
+               bv: sympy.Symbol,
+               cv: sympy.Symbol) -> Callable:
+    return sympy.lambdify((av, bv, cv), expr, modules=["numpy"])
 
 
 def _eval1(f: Callable, xs: np.ndarray) -> np.ndarray:
@@ -430,14 +303,28 @@ def _meshgrid(
     return np.meshgrid(xs, ys)
 
 
-async def _run_blocking(fn: Callable, *args) -> io.BytesIO:
-    """
-    Run a blocking plot function in the thread-pool executor.
+def _smart_ylim(
+    ys: np.ndarray,
+    style: StyleOptions,
+    pad_frac: float = 0.08,
+) -> Optional[Tuple[float, float]]:
+    if style.y_lim is not None or style.y_log:
+        return None
 
-    All public async functions funnel through here so error handling
-    and executor dispatch are in one place.
-    """
-    loop = asyncio.get_event_loop()
+    finite = ys[np.isfinite(ys)]
+    if len(finite) == 0:
+        return None
+
+    lo = float(np.nanpercentile(finite, 2))
+    hi = float(np.nanpercentile(finite, 98))
+    if lo == hi:
+        lo, hi = lo - 1.0, hi + 1.0
+    pad = (hi - lo) * pad_frac
+    return (lo - pad, hi + pad)
+
+
+async def _run_blocking(fn: Callable, *args) -> io.BytesIO:
+    loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(_plot_executor, fn, *args)
     except Exception as exc:
@@ -447,13 +334,6 @@ async def _run_blocking(fn: Callable, *args) -> io.BytesIO:
 # ---------------------------------------------------------------------------
 # Blocking implementations
 # ---------------------------------------------------------------------------
-# Convention:
-#   • Every function receives *style* as its last positional argument.
-#   • Every function wraps its body in ``with matplotlib.rc_context(rc=style.rc_overrides()):``
-#     so that concurrent calls never share global state.
-# ---------------------------------------------------------------------------
-
-# ── 2-D single-variable ────────────────────────────────────────────────────
 
 def _plot_function_blocking(
     expr: sympy.Expr,
@@ -463,24 +343,53 @@ def _plot_function_blocking(
     title: str,
     style: StyleOptions,
     additional_exprs: list = None,
+    n_1d: int = PLOT_POINTS,
 ) -> io.BytesIO:
+    if style.x_log and x_min <= 0:
+        raise ValueError(
+            f"Log x-axis requires x_min > 0, but x_min={x_min}. "
+            "Change the domain or disable log scale."
+        )
+
     with matplotlib.rc_context(rc=style.rc_overrides()):
+        if style.x_log:
+            xs = np.logspace(np.log10(x_min), np.log10(x_max), n_1d)
+        else:
+            xs = np.linspace(x_min, x_max, n_1d)
+
         f  = _lambdify1(expr, var)
-        xs = np.linspace(x_min, x_max, PLOT_POINTS)
         ys = _eval1(f, xs)
 
         fig, ax = _white_fig(style)
         ax.plot(xs, ys, label=str(expr))
         _apply_line_style(ax, style)
-        
+
+        if style.fill_below:
+            fill_c = style.fill_color if style.fill_color else style.color
+            ax.fill_between(xs, ys, 0, alpha=0.25, color=fill_c)
+
         if additional_exprs:
             for extra in additional_exprs:
                 f_extra = _lambdify1(extra, var)
                 ys_extra = _eval1(f_extra, xs)
                 ax.plot(xs, ys_extra, label=str(extra))
+                if style.fill_below:
+                    fill_c = style.fill_color if style.fill_color else style.color
+                    ax.fill_between(xs, ys_extra, 0, alpha=0.15, color=fill_c)
             ax.legend(loc="upper right")
-            
-        _apply_axes_style(ax, title or str(expr), str(var), f"f({var})", style.show_grid)
+
+        _apply_axes_style(
+            ax, title or str(expr), str(var), f"f({var})",
+            style.show_grid, style=style,
+        )
+
+        all_ys = ys if additional_exprs is None else np.concatenate(
+            [ys] + [_eval1(_lambdify1(e, var), xs) for e in (additional_exprs or [])]
+        )
+        ylim = _smart_ylim(all_ys, style)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -495,7 +404,6 @@ def _plot_points_blocking(
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
         fig, ax = _white_fig(style)
-        # Facecolor is handled by rcParams
         ax.scatter(
             np.asarray(xs, float),
             np.asarray(ys, float),
@@ -503,12 +411,10 @@ def _plot_points_blocking(
             color=style.color,
             zorder=3,
         )
-        _apply_axes_style(ax, title, xlabel, ylabel, style.show_grid)
+        _apply_axes_style(ax, title, xlabel, ylabel, style.show_grid, style=style)
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
-
-# ── 2-D multivariable ──────────────────────────────────────────────────────
 
 def _plot_contour_blocking(
     expr:    sympy.Expr,
@@ -519,22 +425,37 @@ def _plot_contour_blocking(
     title:   str,
     levels:  int,
     style:   StyleOptions,
+    n_2d:    int = GRID_POINTS,
 ) -> io.BytesIO:
+    if style.x_log and x_range[0] <= 0:
+        raise ValueError("Log x-axis requires x_range[0] > 0.")
+    if style.y_log and y_range[0] <= 0:
+        raise ValueError("Log y-axis requires y_range[0] > 0.")
+
     with matplotlib.rc_context(rc=style.rc_overrides()):
-        X, Y = _meshgrid(x_range, y_range)
+        X, Y = _meshgrid(x_range, y_range, n=n_2d)
         Z    = _eval2(_lambdify2(expr, x_var, y_var), X, Y)
 
         fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
-        # Facecolor is handled by rcParams
 
         cf = ax.contourf(X, Y, Z, levels=levels, cmap=style.colormap, alpha=0.85)
         ax.contour(X, Y, Z, levels=levels, colors="k", linewidths=0.4, alpha=0.4)
         fig.colorbar(cf, ax=ax, shrink=0.85, label=f"f({x_var},{y_var})")
 
-        ax.set_title(title or str(expr), fontsize=12, pad=6)
-        ax.set_xlabel(str(x_var), fontsize=10)
-        ax.set_ylabel(str(y_var), fontsize=10)
+        ax.set_title(_to_math_label(title or str(expr)), fontsize=12, pad=6)
+        ax.set_xlabel(_to_math_label(str(x_var)), fontsize=10)
+        ax.set_ylabel(_to_math_label(str(y_var)), fontsize=10)
         ax.grid(style.show_grid, alpha=0.2)
+
+        if style.x_log:
+            ax.set_xscale("log")
+        if style.y_log:
+            ax.set_yscale("log")
+        if style.x_lim is not None:
+            ax.set_xlim(*style.x_lim)
+        if style.y_lim is not None:
+            ax.set_ylim(*style.y_lim)
+
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -550,9 +471,10 @@ def _plot_vector_field_blocking(
     stream:  bool,
     density: float,
     style:   StyleOptions,
+    n_2d:    int = GRID_POINTS,
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
-        n  = 24 if not stream else GRID_POINTS
+        n  = 24 if not stream else n_2d
         xs = np.linspace(x_range[0], x_range[1], n)
         ys = np.linspace(y_range[0], y_range[1], n)
         X, Y = np.meshgrid(xs, ys)
@@ -569,7 +491,6 @@ def _plot_vector_field_blocking(
         mag_safe = np.where(mag == 0, 1, mag)
 
         fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
-        # Facecolor is handled by rcParams
 
         if stream:
             sp = ax.streamplot(
@@ -586,10 +507,16 @@ def _plot_vector_field_blocking(
             )
             fig.colorbar(q, ax=ax, shrink=0.85, label="magnitude")
 
-        ax.set_title(title or f"({u_expr}, {v_expr})", fontsize=12, pad=6)
-        ax.set_xlabel(str(x_var), fontsize=10)
-        ax.set_ylabel(str(y_var), fontsize=10)
+        ax.set_title(_to_math_label(title or f"({u_expr}, {v_expr})"), fontsize=12, pad=6)
+        ax.set_xlabel(_to_math_label(str(x_var)), fontsize=10)
+        ax.set_ylabel(_to_math_label(str(y_var)), fontsize=10)
         ax.grid(style.show_grid, alpha=0.2)
+
+        if style.x_lim is not None:
+            ax.set_xlim(*style.x_lim)
+        if style.y_lim is not None:
+            ax.set_ylim(*style.y_lim)
+
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -604,11 +531,12 @@ def _plot_parametric_2d_blocking(
     xlabel: str,
     ylabel: str,
     style:  StyleOptions,
+    n_1d:   int = PARAM_POINTS,
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
         fx = _lambdify1(x_expr, t_var)
         fy = _lambdify1(y_expr, t_var)
-        ts = np.linspace(t_min, t_max, PARAM_POINTS)
+        ts = np.linspace(t_min, t_max, n_1d)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
@@ -616,7 +544,6 @@ def _plot_parametric_2d_blocking(
             ys = np.asarray(fy(ts), dtype=float)
 
         fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
-        # Facecolor is handled by rcParams
 
         points = np.array([xs, ys]).T.reshape(-1, 1, 2)
         segs   = np.concatenate([points[:-1], points[1:]], axis=1)
@@ -626,15 +553,19 @@ def _plot_parametric_2d_blocking(
         ax.autoscale()
         fig.colorbar(lc, ax=ax, shrink=0.85, label=str(t_var))
 
-        ax.set_title(title or f"({x_expr}, {y_expr})", fontsize=12, pad=6)
-        ax.set_xlabel(xlabel, fontsize=10)
-        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(_to_math_label(title or f"({x_expr}, {y_expr})"), fontsize=12, pad=6)
+        ax.set_xlabel(_to_math_label(xlabel), fontsize=10)
+        ax.set_ylabel(_to_math_label(ylabel), fontsize=10)
         ax.grid(style.show_grid, alpha=0.3)
+
+        if style.x_lim is not None:
+            ax.set_xlim(*style.x_lim)
+        if style.y_lim is not None:
+            ax.set_ylim(*style.y_lim)
+
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
-
-# ── 3-D ────────────────────────────────────────────────────────────────────
 
 def _plot_surface_blocking(
     expr:    sympy.Expr,
@@ -644,9 +575,10 @@ def _plot_surface_blocking(
     y_range: Tuple[float, float],
     title:   str,
     style:   StyleOptions,
+    n_2d:    int = GRID_POINTS,
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
-        X, Y = _meshgrid(x_range, y_range)
+        X, Y = _meshgrid(x_range, y_range, n=n_2d)
         Z    = _eval2(_lambdify2(expr, x_var, y_var), X, Y)
 
         fig, ax = _make_3d_axes(style)
@@ -657,10 +589,10 @@ def _plot_surface_blocking(
         )
         fig.colorbar(surf, ax=ax, shrink=0.6, pad=0.1, label=f"f({x_var},{y_var})")
 
-        ax.set_title(title or str(expr), fontsize=12)
-        ax.set_xlabel(str(x_var), fontsize=9)
-        ax.set_ylabel(str(y_var), fontsize=9)
-        ax.set_zlabel(f"f({x_var},{y_var})", fontsize=9)
+        ax.set_title(_to_math_label(title or str(expr)), fontsize=12)
+        ax.set_xlabel(_to_math_label(str(x_var)), fontsize=9)
+        ax.set_ylabel(_to_math_label(str(y_var)), fontsize=9)
+        ax.set_zlabel(_to_math_label(f"f({x_var},{y_var})"), fontsize=9)
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -675,9 +607,10 @@ def _plot_wireframe_blocking(
     rstride: int,
     cstride: int,
     style:   StyleOptions,
+    n_2d:    int = GRID_POINTS,
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
-        n    = min(GRID_POINTS, 60)
+        n    = min(n_2d, 60)
         X, Y = _meshgrid(x_range, y_range, n)
         Z    = _eval2(_lambdify2(expr, x_var, y_var), X, Y)
 
@@ -688,10 +621,10 @@ def _plot_wireframe_blocking(
             rstride=rstride, cstride=cstride,
         )
 
-        ax.set_title(title or str(expr), fontsize=12)
-        ax.set_xlabel(str(x_var), fontsize=9)
-        ax.set_ylabel(str(y_var), fontsize=9)
-        ax.set_zlabel(f"f({x_var},{y_var})", fontsize=9)
+        ax.set_title(_to_math_label(title or str(expr)), fontsize=12)
+        ax.set_xlabel(_to_math_label(str(x_var)), fontsize=9)
+        ax.set_ylabel(_to_math_label(str(y_var)), fontsize=9)
+        ax.set_zlabel(_to_math_label(f"f({x_var},{y_var})"), fontsize=9)
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -708,9 +641,10 @@ def _plot_parametric_3d_blocking(
     ylabel: str,
     zlabel: str,
     style:  StyleOptions,
+    n_1d:   int = PARAM_POINTS,
 ) -> io.BytesIO:
     with matplotlib.rc_context(rc=style.rc_overrides()):
-        ts = np.linspace(t_min, t_max, PARAM_POINTS)
+        ts = np.linspace(t_min, t_max, n_1d)
         fx = _lambdify1(x_expr, t_var)
         fy = _lambdify1(y_expr, t_var)
         fz = _lambdify1(z_expr, t_var)
@@ -735,10 +669,10 @@ def _plot_parametric_3d_blocking(
         sm.set_array([])
         fig.colorbar(sm, ax=ax, shrink=0.55, pad=0.1, label=str(t_var))
 
-        ax.set_title(title or f"({x_expr}, {y_expr}, {z_expr})", fontsize=11)
-        ax.set_xlabel(xlabel, fontsize=9)
-        ax.set_ylabel(ylabel, fontsize=9)
-        ax.set_zlabel(zlabel, fontsize=9)
+        ax.set_title(_to_math_label(title or f"({x_expr}, {y_expr}, {z_expr})"), fontsize=11)
+        ax.set_xlabel(_to_math_label(xlabel), fontsize=9)
+        ax.set_ylabel(_to_math_label(ylabel), fontsize=9)
+        ax.set_zlabel(_to_math_label(zlabel), fontsize=9)
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -767,10 +701,83 @@ def _plot_scatter_3d_blocking(
         )
         fig.colorbar(sc, ax=ax, shrink=0.55, pad=0.1, label=zlabel)
 
-        ax.set_title(title, fontsize=12)
-        ax.set_xlabel(xlabel, fontsize=9)
-        ax.set_ylabel(ylabel, fontsize=9)
-        ax.set_zlabel(zlabel, fontsize=9)
+        ax.set_title(_to_math_label(title), fontsize=12)
+        ax.set_xlabel(_to_math_label(xlabel), fontsize=9)
+        ax.set_ylabel(_to_math_label(ylabel), fontsize=9)
+        ax.set_zlabel(_to_math_label(zlabel), fontsize=9)
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
+def _plot_polar_blocking(
+    expr:            sympy.Expr,
+    theta_var:       sympy.Symbol,
+    theta_min:       float,
+    theta_max:       float,
+    title:           str,
+    style:           StyleOptions,
+    additional_exprs: list = None,
+    n_1d:            int   = PARAM_POINTS,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        thetas = np.linspace(theta_min, theta_max, n_1d)
+
+        f_main = _lambdify1(expr, theta_var)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            r_main = np.asarray(f_main(thetas), dtype=float)
+        r_main = np.where(np.isfinite(r_main), r_main, np.nan)
+
+        fig = plt.figure(figsize=(style.fig_width, style.fig_height))
+        ax  = fig.add_subplot(111, projection="polar")
+
+        has_extra = bool(additional_exprs)
+
+        ax.plot(
+            thetas, r_main,
+            color=style.color,
+            linewidth=style.line_width,
+            linestyle=style.line_style,
+            label=_to_math_label(str(expr)) if has_extra else None,
+        )
+
+        if has_extra:
+            cmap_fn  = plt.get_cmap(style.colormap)
+            n_extra  = len(additional_exprs)
+            offsets  = np.linspace(0.15, 0.85, n_extra) if n_extra > 1 else [0.5]
+
+            for extra_expr, offset in zip(additional_exprs, offsets):
+                f_extra = _lambdify1(extra_expr, theta_var)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    r_extra = np.asarray(f_extra(thetas), dtype=float)
+                r_extra = np.where(np.isfinite(r_extra), r_extra, np.nan)
+                ax.plot(
+                    thetas, r_extra,
+                    color=cmap_fn(offset),
+                    linewidth=style.line_width,
+                    linestyle=style.line_style,
+                    label=_to_math_label(str(extra_expr)),
+                )
+
+            ax.legend(
+                loc="upper right",
+                bbox_to_anchor=(1.3, 1.1),
+                fontsize=8,
+                framealpha=0.7,
+            )
+
+        ax.grid(style.show_grid, alpha=0.3)
+
+        ax.set_thetagrids(
+            np.degrees(np.linspace(0, 2 * np.pi, 9)[:-1]),
+            labels=["0", "π/4", "π/2", "3π/4", "π", "5π/4", "3π/2", "7π/4"],
+            fontsize=7,
+        )
+
+        title_str = title or str(expr)
+        ax.set_title(_to_math_label(title_str), fontsize=12, pad=14)
+
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -782,13 +789,6 @@ def _render_spec_onto_axes(
     ax:            plt.Axes,
     default_style: StyleOptions,
 ) -> None:
-    """
-    Draw a single :class:`PlotSpec` onto *ax*.
-
-    The spec's own ``style`` overrides ``default_style`` when provided.
-    Add new ``kind`` branches here when adding new 2-D plot types that
-    should be composable inside ``plot_multi``.
-    """
     style = spec.style or default_style
     kind  = spec.kind.lower()
 
@@ -798,8 +798,18 @@ def _render_spec_onto_axes(
         ys = _eval1(f, xs)
         ax.plot(xs, ys, color=style.color, linewidth=style.line_width,
                 linestyle=style.line_style)
+
+        if style.fill_below:
+            fill_c = style.fill_color if style.fill_color else style.color
+            ax.fill_between(xs, ys, 0, alpha=0.25, color=fill_c)
+
         _apply_axes_style(ax, spec.title or str(spec.expr),
-                          str(spec.var), f"f({spec.var})", style.show_grid)
+                          str(spec.var), f"f({spec.var})", style.show_grid,
+                          style=style)
+
+        ylim = _smart_ylim(ys, style)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
 
     elif kind == "points":
         ax.scatter(
@@ -809,7 +819,8 @@ def _render_spec_onto_axes(
             color=style.color,
             zorder=3,
         )
-        _apply_axes_style(ax, spec.title, spec.xlabel, spec.ylabel, style.show_grid)
+        _apply_axes_style(ax, spec.title, spec.xlabel, spec.ylabel, style.show_grid,
+                          style=style)
 
     elif kind == "contour":
         X, Y = _meshgrid(spec.x_range, spec.y_range, n=60)
@@ -817,10 +828,18 @@ def _render_spec_onto_axes(
         cf   = ax.contourf(X, Y, Z, levels=12, cmap=style.colormap, alpha=0.85)
         ax.contour(X, Y, Z, levels=12, colors="k", linewidths=0.3, alpha=0.4)
         ax.figure.colorbar(cf, ax=ax, shrink=0.8)
-        ax.set_title(spec.title or str(spec.expr), fontsize=11)
-        ax.set_xlabel(str(spec.x_var), fontsize=9)
-        ax.set_ylabel(str(spec.y_var), fontsize=9)
+        ax.set_title(_to_math_label(spec.title or str(spec.expr)), fontsize=11)
+        ax.set_xlabel(_to_math_label(str(spec.x_var)), fontsize=9)
+        ax.set_ylabel(_to_math_label(str(spec.y_var)), fontsize=9)
         ax.grid(style.show_grid, alpha=0.2)
+        if style.x_log:
+            ax.set_xscale("log")
+        if style.y_log:
+            ax.set_yscale("log")
+        if style.x_lim is not None:
+            ax.set_xlim(*style.x_lim)
+        if style.y_lim is not None:
+            ax.set_ylim(*style.y_lim)
 
     elif kind == "vector_field":
         n  = 18
@@ -835,10 +854,14 @@ def _render_spec_onto_axes(
         safe = np.where(mag == 0, 1, mag)
         ax.quiver(X, Y, U / safe, V / safe, mag,
                   cmap=style.colormap, scale=22, width=0.004)
-        ax.set_title(spec.title or f"({spec.u_expr},{spec.v_expr})", fontsize=11)
-        ax.set_xlabel(str(spec.x_var), fontsize=9)
-        ax.set_ylabel(str(spec.y_var), fontsize=9)
+        ax.set_title(_to_math_label(spec.title or f"({spec.u_expr},{spec.v_expr})"), fontsize=11)
+        ax.set_xlabel(_to_math_label(str(spec.x_var)), fontsize=9)
+        ax.set_ylabel(_to_math_label(str(spec.y_var)), fontsize=9)
         ax.grid(style.show_grid, alpha=0.2)
+        if style.x_lim is not None:
+            ax.set_xlim(*style.x_lim)
+        if style.y_lim is not None:
+            ax.set_ylim(*style.y_lim)
 
     elif kind == "parametric_2d":
         ts = np.linspace(spec.t_min, spec.t_max, PARAM_POINTS)
@@ -848,17 +871,65 @@ def _render_spec_onto_axes(
             ys = np.asarray(_lambdify1(spec.y_expr, spec.t_var)(ts), float)
         ax.plot(xs, ys, color=style.color, linewidth=style.line_width,
                 linestyle=style.line_style)
-        ax.set_title(spec.title or f"({spec.x_expr},{spec.y_expr})", fontsize=11)
-        ax.set_xlabel(spec.xlabel, fontsize=9)
-        ax.set_ylabel(spec.ylabel, fontsize=9)
+        ax.set_title(_to_math_label(spec.title or f"({spec.x_expr},{spec.y_expr})"), fontsize=11)
+        ax.set_xlabel(_to_math_label(spec.xlabel), fontsize=9)
+        ax.set_ylabel(_to_math_label(spec.ylabel), fontsize=9)
         ax.grid(style.show_grid, alpha=0.3)
+        if style.x_lim is not None:
+            ax.set_xlim(*style.x_lim)
+        if style.y_lim is not None:
+            ax.set_ylim(*style.y_lim)
+
+    elif kind == "polar":
+        ss = ax.get_subplotspec()
+        ax.set_visible(False)
+        polar_ax = ax.get_figure().add_subplot(ss, projection="polar")
+
+        thetas = np.linspace(spec.t_min, spec.t_max, PARAM_POINTS)
+        f_main = _lambdify1(spec.expr, spec.var)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            r_main = np.asarray(f_main(thetas), dtype=float)
+        r_main = np.where(np.isfinite(r_main), r_main, np.nan)
+
+        has_extra = bool(spec.additional_exprs)
+        polar_ax.plot(
+            thetas, r_main,
+            color=style.color,
+            linewidth=style.line_width,
+            linestyle=style.line_style,
+            label=_to_math_label(str(spec.expr)) if has_extra else None,
+        )
+
+        if has_extra:
+            cmap_fn = plt.get_cmap(style.colormap)
+            n_extra = len(spec.additional_exprs)
+            offsets = np.linspace(0.15, 0.85, n_extra) if n_extra > 1 else [0.5]
+            for extra_expr, offset in zip(spec.additional_exprs, offsets):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    r_extra = np.asarray(
+                        _lambdify1(extra_expr, spec.var)(thetas), dtype=float
+                    )
+                r_extra = np.where(np.isfinite(r_extra), r_extra, np.nan)
+                polar_ax.plot(
+                    thetas, r_extra,
+                    color=cmap_fn(offset),
+                    linewidth=style.line_width,
+                    label=_to_math_label(str(extra_expr)),
+                )
+            polar_ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1),
+                            fontsize=7, framealpha=0.7)
+
+        polar_ax.grid(style.show_grid, alpha=0.3)
+        polar_ax.set_title(
+            _to_math_label(spec.title or str(spec.expr)), fontsize=11, pad=14
+        )
 
     else:
-        # Unknown kind — leave axes blank with a visible error label.
-        # This makes it easy to spot missing branches during development.
         ax.text(0.5, 0.5, f"Unknown kind:\n'{spec.kind}'",
                 ha="center", va="center", transform=ax.transAxes, color="red")
-        ax.set_title(spec.title)
+        ax.set_title(_to_math_label(spec.title))
 
 
 def _plot_multi_blocking(
@@ -878,7 +949,6 @@ def _plot_multi_blocking(
             figsize=(fig_width, row_height * nrows),
             squeeze=False,
         )
-        # Facecolor is handled by rcParams
 
         flat = axes.flatten()
         for i, spec in enumerate(specs):
@@ -889,7 +959,7 @@ def _plot_multi_blocking(
             flat[j].set_visible(False)
 
         if title:
-            fig.suptitle(title, fontsize=14, y=1.01)
+            fig.suptitle(_to_math_label(title), fontsize=14, y=1.01)
 
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
@@ -907,32 +977,13 @@ async def plot_function(
     title: str   = "",
     style: StyleOptions = _DEFAULT_STYLE,
     additional_exprs: list = None,
+    resolution_1d: int = PLOT_POINTS,
 ) -> discord.File:
-    """
-    Plot a SymPy expression as a line graph.
-
-    Parameters
-    ----------
-    expr : sympy.Expr
-        Expression to plot, e.g. ``sympy.sin(x) / x``.
-    var : sympy.Symbol
-        Free variable used as the x-axis.
-    x_min, x_max : float
-        Domain boundaries (default ``-10``, ``10``).
-    title : str
-        Plot title; defaults to ``str(expr)``.
-    style : StyleOptions
-        Visual style options.
-
-    Returns
-    -------
-    discord.File
-        PNG named ``plot.png``.
-    """
     if x_min >= x_max:
         raise ValueError(f"x_min ({x_min}) must be < x_max ({x_max}).")
     buf = await _run_blocking(
-        _plot_function_blocking, expr, var, x_min, x_max, title, style, additional_exprs,
+        _plot_function_blocking,
+        expr, var, x_min, x_max, title, style, additional_exprs, resolution_1d,
     )
     return discord.File(buf, filename="plot.png")
 
@@ -945,23 +996,6 @@ async def plot_points(
     ylabel: str = "y",
     style:  StyleOptions = _DEFAULT_STYLE,
 ) -> discord.File:
-    """
-    Scatter plot from paired numeric lists.
-
-    Parameters
-    ----------
-    xs, ys : list
-        Equal-length sequences of numeric values.
-    title, xlabel, ylabel : str
-        Optional labels.
-    style : StyleOptions
-        Visual style options.
-
-    Returns
-    -------
-    discord.File
-        PNG named ``plot.png``.
-    """
     if len(xs) != len(ys):
         raise ValueError(f"xs and ys lengths differ ({len(xs)} vs {len(ys)}).")
     if not xs:
@@ -981,33 +1015,11 @@ async def plot_contour(
     title:    str = "",
     levels:   int = 20,
     style:    StyleOptions = _DEFAULT_STYLE,
+    resolution_2d: int = GRID_POINTS,
 ) -> discord.File:
-    """
-    Filled contour map of a two-variable SymPy expression f(x, y).
-
-    Parameters
-    ----------
-    expr : sympy.Expr
-        Expression in *x_var* and *y_var*.
-    x_var, y_var : sympy.Symbol
-        The two free variables.
-    x_range, y_range : (float, float)
-        Axis domain bounds (default ``(-5, 5)`` each).
-    title : str
-        Plot title.
-    levels : int
-        Number of contour levels (default ``20``).
-    style : StyleOptions
-        Visual style options (``colormap`` is used here).
-
-    Returns
-    -------
-    discord.File
-        PNG named ``contour.png``.
-    """
     buf = await _run_blocking(
         _plot_contour_blocking,
-        expr, x_var, y_var, x_range, y_range, title, levels, style,
+        expr, x_var, y_var, x_range, y_range, title, levels, style, resolution_2d,
     )
     return discord.File(buf, filename="contour.png")
 
@@ -1023,36 +1035,12 @@ async def plot_vector_field(
     stream:  bool  = False,
     density: float = 1.2,
     style:   StyleOptions = _DEFAULT_STYLE,
+    resolution_2d: int = GRID_POINTS,
 ) -> discord.File:
-    """
-    2-D vector field plot F(x, y) = (u, v).
-
-    Parameters
-    ----------
-    u_expr, v_expr : sympy.Expr
-        x- and y-components of the field.
-    x_var, y_var : sympy.Symbol
-        Free variables.
-    x_range, y_range : (float, float)
-        Domain bounds.
-    title : str
-        Plot title.
-    stream : bool
-        Use streamplot instead of quiver.
-    density : float
-        Stream density when ``stream=True``.
-    style : StyleOptions
-        Visual style options.
-
-    Returns
-    -------
-    discord.File
-        PNG named ``vector_field.png``.
-    """
     buf = await _run_blocking(
         _plot_vector_field_blocking,
         u_expr, v_expr, x_var, y_var,
-        x_range, y_range, title, stream, density, style,
+        x_range, y_range, title, stream, density, style, resolution_2d,
     )
     return discord.File(buf, filename="vector_field.png")
 
@@ -1067,35 +1055,14 @@ async def plot_parametric_2d(
     xlabel: str = "x",
     ylabel: str = "y",
     style:  StyleOptions = _DEFAULT_STYLE,
+    resolution_1d: int = PARAM_POINTS,
 ) -> discord.File:
-    """
-    2-D parametric curve (x(t), y(t)).
-
-    Parameters
-    ----------
-    x_expr, y_expr : sympy.Expr
-        Coordinate expressions in *t_var*.
-    t_var : sympy.Symbol
-        The parameter symbol.
-    t_min, t_max : float
-        Parameter range.
-    title : str
-        Plot title.
-    xlabel, ylabel : str
-        Axis labels.
-    style : StyleOptions
-        Visual style options.
-
-    Returns
-    -------
-    discord.File
-        PNG named ``parametric_2d.png``.
-    """
     if t_min >= t_max:
         raise ValueError(f"t_min ({t_min}) must be < t_max ({t_max}).")
     buf = await _run_blocking(
         _plot_parametric_2d_blocking,
         x_expr, y_expr, t_var, t_min, t_max, title, xlabel, ylabel, style,
+        resolution_1d,
     )
     return discord.File(buf, filename="parametric_2d.png")
 
@@ -1108,31 +1075,11 @@ async def plot_surface(
     y_range: Tuple[float, float] = (-5.0, 5.0),
     title:   str = "",
     style:   StyleOptions = _DEFAULT_STYLE,
+    resolution_2d: int = GRID_POINTS,
 ) -> discord.File:
-    """
-    3-D surface plot of f(x, y).
-
-    Parameters
-    ----------
-    expr : sympy.Expr
-        Expression in *x_var* and *y_var*.
-    x_var, y_var : sympy.Symbol
-        Free variables.
-    x_range, y_range : (float, float)
-        Domain bounds.
-    title : str
-        Plot title.
-    style : StyleOptions
-        Visual style options (``colormap`` and ``alpha`` are used here).
-
-    Returns
-    -------
-    discord.File
-        PNG named ``surface.png``.
-    """
     buf = await _run_blocking(
         _plot_surface_blocking,
-        expr, x_var, y_var, x_range, y_range, title, style,
+        expr, x_var, y_var, x_range, y_range, title, style, resolution_2d,
     )
     return discord.File(buf, filename="surface.png")
 
@@ -1147,33 +1094,12 @@ async def plot_wireframe(
     rstride: int = 3,
     cstride: int = 3,
     style:   StyleOptions = _DEFAULT_STYLE,
+    resolution_2d: int = GRID_POINTS,
 ) -> discord.File:
-    """
-    3-D wireframe plot of f(x, y).
-
-    Parameters
-    ----------
-    expr : sympy.Expr
-        Expression in *x_var* and *y_var*.
-    x_var, y_var : sympy.Symbol
-        Free variables.
-    x_range, y_range : (float, float)
-        Domain bounds.
-    title : str
-        Plot title.
-    rstride, cstride : int
-        Row/column decimation for wireframe density.
-    style : StyleOptions
-        Visual style options (``color`` is used for wire colour).
-
-    Returns
-    -------
-    discord.File
-        PNG named ``wireframe.png``.
-    """
     buf = await _run_blocking(
         _plot_wireframe_blocking,
         expr, x_var, y_var, x_range, y_range, title, rstride, cstride, style,
+        resolution_2d,
     )
     return discord.File(buf, filename="wireframe.png")
 
@@ -1190,36 +1116,14 @@ async def plot_parametric_3d(
     ylabel: str = "y",
     zlabel: str = "z",
     style:  StyleOptions = _DEFAULT_STYLE,
+    resolution_1d: int = PARAM_POINTS,
 ) -> discord.File:
-    """
-    3-D parametric curve (x(t), y(t), z(t)).
-
-    Parameters
-    ----------
-    x_expr, y_expr, z_expr : sympy.Expr
-        Coordinate expressions in *t_var*.
-    t_var : sympy.Symbol
-        Parameter symbol.
-    t_min, t_max : float
-        Parameter range.
-    title : str
-        Plot title.
-    xlabel, ylabel, zlabel : str
-        Axis labels.
-    style : StyleOptions
-        Visual style options.
-
-    Returns
-    -------
-    discord.File
-        PNG named ``parametric_3d.png``.
-    """
     if t_min >= t_max:
         raise ValueError(f"t_min ({t_min}) must be < t_max ({t_max}).")
     buf = await _run_blocking(
         _plot_parametric_3d_blocking,
         x_expr, y_expr, z_expr, t_var,
-        t_min, t_max, title, xlabel, ylabel, zlabel, style,
+        t_min, t_max, title, xlabel, ylabel, zlabel, style, resolution_1d,
     )
     return discord.File(buf, filename="parametric_3d.png")
 
@@ -1234,25 +1138,6 @@ async def plot_scatter_3d(
     zlabel:  str = "z",
     style:   StyleOptions = _DEFAULT_STYLE,
 ) -> discord.File:
-    """
-    3-D scatter plot from three parallel numeric lists.
-
-    Parameters
-    ----------
-    xs, ys, zs : list
-        Equal-length sequences of numeric values.
-    title : str
-        Plot title.
-    xlabel, ylabel, zlabel : str
-        Axis labels.
-    style : StyleOptions
-        Visual style options (``colormap`` used for z-colouring).
-
-    Returns
-    -------
-    discord.File
-        PNG named ``scatter_3d.png``.
-    """
     if not (len(xs) == len(ys) == len(zs)):
         raise ValueError("xs, ys, and zs must all have the same length.")
     if not xs:
@@ -1264,6 +1149,28 @@ async def plot_scatter_3d(
     return discord.File(buf, filename="scatter_3d.png")
 
 
+async def plot_polar(
+    expr:            sympy.Expr,
+    theta_var:       sympy.Symbol,
+    theta_min:       float = 0.0,
+    theta_max:       float = 2 * float(sympy.pi),
+    title:           str   = "",
+    style:           StyleOptions = _DEFAULT_STYLE,
+    additional_exprs: list  = None,
+    resolution_1d:   int   = PARAM_POINTS,
+) -> discord.File:
+    if theta_min >= theta_max:
+        raise ValueError(
+            f"theta_min ({theta_min}) must be < theta_max ({theta_max})."
+        )
+    buf = await _run_blocking(
+        _plot_polar_blocking,
+        expr, theta_var, theta_min, theta_max, title, style,
+        additional_exprs, resolution_1d,
+    )
+    return discord.File(buf, filename="polar.png")
+
+
 async def plot_multi(
     specs:      Sequence[PlotSpec],
     ncols:      int   = 2,
@@ -1272,29 +1179,6 @@ async def plot_multi(
     row_height: float = 5.0,
     style:      StyleOptions = _DEFAULT_STYLE,
 ) -> discord.File:
-    """
-    Compose multiple plots into a single grid image.
-
-    Parameters
-    ----------
-    specs : list[PlotSpec]
-        One :class:`PlotSpec` per sub-plot panel.
-    ncols : int
-        Number of columns in the grid (default ``2``).
-    title : str
-        Overall figure title.
-    fig_width : float
-        Total figure width in inches (default ``14``).
-    row_height : float
-        Height per row in inches (default ``5``).
-    style : StyleOptions
-        Default style applied to any spec that does not supply its own.
-
-    Returns
-    -------
-    discord.File
-        PNG named ``multi_plot.png``.
-    """
     if not specs:
         raise ValueError("specs must contain at least one PlotSpec.")
     if ncols < 1:
@@ -1307,11 +1191,36 @@ async def plot_multi(
 
 
 # ---------------------------------------------------------------------------
-# Public exports
+# Animation helpers
 # ---------------------------------------------------------------------------
 
-
 from matplotlib.animation import FuncAnimation, PillowWriter
+
+
+def _save_animation_to_gif(fig: plt.Figure, ani: FuncAnimation, fps: int = 15) -> io.BytesIO:
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
+        tmp_name = tmp.name
+
+    try:
+        writer = PillowWriter(fps=fps)
+        ani.save(tmp_name, writer=writer)
+        with open(tmp_name, "rb") as fh:
+            buf = io.BytesIO(fh.read())
+    finally:
+        if os.path.exists(tmp_name):
+            os.remove(tmp_name)
+
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _anim_param_values() -> np.ndarray:
+    return np.linspace(ANIM_PARAM_MIN, ANIM_PARAM_MAX, ANIM_FRAMES)
+
 
 def _plot_animation_function_blocking(
     exprs: list,
@@ -1326,8 +1235,6 @@ def _plot_animation_function_blocking(
         fig, ax = _white_fig(style)
         xs = np.linspace(x_min, x_max, PLOT_POINTS)
 
-        # One Line2D + one lambdified (var, anim_var) callable per expression,
-        # mirroring how _plot_function_blocking handles additional_exprs.
         lines = [ax.plot([], [], label=str(expr))[0] for expr in exprs]
         funcs = [_lambdify2(expr, var, anim_var) for expr in exprs]
 
@@ -1337,14 +1244,12 @@ def _plot_animation_function_blocking(
             ax.legend(loc="upper right")
 
         combined_title = title or ", ".join(str(e) for e in exprs)
-        _apply_axes_style(ax, combined_title, str(var), f"f({var})", style.show_grid)
+        title_math = _to_math_label(combined_title)
+        _apply_axes_style(ax, combined_title, str(var), f"f({var})", style.show_grid,
+                          style=style)
 
-        frames = 30
-        anim_min, anim_max = 0, 10
-        a_vals = np.linspace(anim_min, anim_max, frames)
+        a_vals = _anim_param_values()
 
-        # Pre-compute y-values for every function at every frame so we can
-        # both autoscale the y-axis up front and animate without recomputing.
         all_ys = [
             [_eval1(lambda x, f=f, a=a: f(x, a), xs) for a in a_vals]
             for f in funcs
@@ -1364,67 +1269,458 @@ def _plot_animation_function_blocking(
         def update(frame_idx):
             for line, per_func in zip(lines, all_ys):
                 line.set_data(xs, per_func[frame_idx])
-            ax.set_title(f"{combined_title} ({anim_var}={a_vals[frame_idx]:.2f})")
+            ax.set_title(f"{title_math} ({anim_var}={a_vals[frame_idx]:.2f})")
             return lines
 
-        ani = FuncAnimation(fig, update, frames=frames, init_func=init, blit=False)
-        
-        import tempfile
-        import os
-        
-        with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
-            tmp_name = tmp.name
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, init_func=init, blit=False)
+        return _save_animation_to_gif(fig, ani)
 
-        try:
-            writer = PillowWriter(fps=15)
-            ani.save(tmp_name, writer=writer)
-            with open(tmp_name, "rb") as f:
-                buf = io.BytesIO(f.read())
-        finally:
-            if os.path.exists(tmp_name):
-                os.remove(tmp_name)
 
-        plt.close(fig)
-        buf.seek(0)
-        return buf
+def _plot_animation_contour_blocking(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    anim_var: sympy.Symbol,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    title: str,
+    levels: int,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        X, Y = _meshgrid(x_range, y_range, n=ANIM_GRID_POINTS)
+        f = _lambdify3(expr, x_var, y_var, anim_var)
 
-async def plot_animation_function(cfg) -> discord.File:
-    import sympy
-    x = sympy.Symbol("x")
+        a_vals = _anim_param_values()
+        all_Z = [_eval2(lambda X, Y, a=a: f(X, Y, a), X, Y) for a in a_vals]
+
+        flat = np.concatenate([Z.ravel() for Z in all_Z])
+        valid = flat[np.isfinite(flat)]
+        vmin, vmax = (float(valid.min()), float(valid.max())) if len(valid) else (-1.0, 1.0)
+        if vmin == vmax:
+            vmin, vmax = vmin - 1.0, vmax + 1.0
+
+        fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
+        combined_title = title or str(expr)
+        title_math = _to_math_label(combined_title)
+        xlabel_math = _to_math_label(str(x_var))
+        ylabel_math = _to_math_label(str(y_var))
+
+        def draw(idx: int):
+            ax.clear()
+            cf = ax.contourf(X, Y, all_Z[idx], levels=levels, cmap=style.colormap,
+                             vmin=vmin, vmax=vmax)
+            ax.set_title(f"{title_math} ({anim_var}={a_vals[idx]:.2f})", fontsize=12, pad=6)
+            ax.set_xlabel(xlabel_math, fontsize=10)
+            ax.set_ylabel(ylabel_math, fontsize=10)
+            ax.grid(style.show_grid, alpha=0.2)
+            ax.set_xlim(x_range)
+            ax.set_ylim(y_range)
+            return cf
+
+        first_cf = draw(0)
+        fig.colorbar(first_cf, ax=ax, shrink=0.85, label=f"f({x_var},{y_var})")
+
+        def update(frame_idx: int):
+            draw(frame_idx)
+            return []
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
+def _plot_animation_vector_field_blocking(
+    u_expr: sympy.Expr,
+    v_expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    anim_var: sympy.Symbol,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    title: str,
+    stream: bool,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        n = 20 if not stream else min(ANIM_GRID_POINTS, 50)
+        xs = np.linspace(x_range[0], x_range[1], n)
+        ys = np.linspace(y_range[0], y_range[1], n)
+        X, Y = np.meshgrid(xs, ys)
+
+        fu = _lambdify3(u_expr, x_var, y_var, anim_var)
+        fv = _lambdify3(v_expr, x_var, y_var, anim_var)
+
+        a_vals = _anim_param_values()
+        all_U, all_V, all_mag = [], [], []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for a in a_vals:
+                U = np.asarray(fu(X, Y, a), dtype=float)
+                V = np.asarray(fv(X, Y, a), dtype=float)
+                U = np.where(np.isfinite(U), U, 0.0)
+                V = np.where(np.isfinite(V), V, 0.0)
+                all_U.append(U)
+                all_V.append(V)
+                all_mag.append(np.hypot(U, V))
+
+        flat_mag = np.concatenate([m.ravel() for m in all_mag])
+        finite_mag = flat_mag[np.isfinite(flat_mag)]
+        vmax = float(finite_mag.max()) if len(finite_mag) else 1.0
+        vmax = vmax or 1.0
+
+        fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
+        combined_title = title or f"({u_expr}, {v_expr})"
+        title_math = _to_math_label(combined_title)
+        xlabel_math = _to_math_label(str(x_var))
+        ylabel_math = _to_math_label(str(y_var))
+
+        def draw(idx: int):
+            ax.clear()
+            U, V, mag = all_U[idx], all_V[idx], all_mag[idx]
+            if stream:
+                ax.streamplot(
+                    xs, ys, U, V,
+                    color=mag, cmap=style.colormap,
+                    density=1.2, linewidth=style.line_width, arrowsize=1.2,
+                )
+            else:
+                mag_safe = np.where(mag == 0, 1, mag)
+                ax.quiver(
+                    X, Y, U / mag_safe, V / mag_safe, mag,
+                    cmap=style.colormap, scale=25, width=0.003, clim=(0, vmax),
+                )
+            ax.set_title(f"{title_math} ({anim_var}={a_vals[idx]:.2f})", fontsize=12, pad=6)
+            ax.set_xlabel(xlabel_math, fontsize=10)
+            ax.set_ylabel(ylabel_math, fontsize=10)
+            ax.grid(style.show_grid, alpha=0.2)
+            ax.set_xlim(x_range)
+            ax.set_ylim(y_range)
+
+        draw(0)
+
+        def update(frame_idx: int):
+            draw(frame_idx)
+            return []
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
+def _plot_animation_parametric_2d_blocking(
+    x_expr: sympy.Expr,
+    y_expr: sympy.Expr,
+    t_var: sympy.Symbol,
+    anim_var: sympy.Symbol,
+    t_min: float,
+    t_max: float,
+    title: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        ts = np.linspace(t_min, t_max, PARAM_POINTS)
+        fx = _lambdify2(x_expr, t_var, anim_var)
+        fy = _lambdify2(y_expr, t_var, anim_var)
+
+        a_vals = _anim_param_values()
+        all_xs, all_ys = [], []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for a in a_vals:
+                all_xs.append(np.asarray(fx(ts, a), dtype=float))
+                all_ys.append(np.asarray(fy(ts, a), dtype=float))
+
+        flat_x = np.concatenate(all_xs)
+        flat_y = np.concatenate(all_ys)
+        vx = flat_x[np.isfinite(flat_x)]
+        vy = flat_y[np.isfinite(flat_y)]
+        xmin, xmax = (float(vx.min()), float(vx.max())) if len(vx) else (-1.0, 1.0)
+        ymin, ymax = (float(vy.min()), float(vy.max())) if len(vy) else (-1.0, 1.0)
+        pad_x = (xmax - xmin) * 0.1 or 1.0
+        pad_y = (ymax - ymin) * 0.1 or 1.0
+
+        fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
+        line, = ax.plot([], [])
+        _apply_line_style(ax, style)
+        combined_title = title or f"({x_expr}, {y_expr})"
+        title_math = _to_math_label(combined_title)
+        _apply_axes_style(ax, combined_title, "x", "y", style.show_grid, style=style)
+        ax.set_xlim(xmin - pad_x, xmax + pad_x)
+        ax.set_ylim(ymin - pad_y, ymax + pad_y)
+
+        def init():
+            line.set_data([], [])
+            return line,
+
+        def update(frame_idx):
+            line.set_data(all_xs[frame_idx], all_ys[frame_idx])
+            ax.set_title(f"{title_math} ({anim_var}={a_vals[frame_idx]:.2f})", fontsize=12, pad=6)
+            return line,
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, init_func=init, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
+def _plot_animation_surface_blocking(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    anim_var: sympy.Symbol,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    title: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        X, Y = _meshgrid(x_range, y_range, n=ANIM_GRID_POINTS)
+        f = _lambdify3(expr, x_var, y_var, anim_var)
+
+        a_vals = _anim_param_values()
+        all_Z = [_eval2(lambda X, Y, a=a: f(X, Y, a), X, Y) for a in a_vals]
+
+        flat = np.concatenate([Z.ravel() for Z in all_Z])
+        valid = flat[np.isfinite(flat)]
+        zmin, zmax = (float(valid.min()), float(valid.max())) if len(valid) else (-1.0, 1.0)
+        if zmin == zmax:
+            zmin, zmax = zmin - 1.0, zmax + 1.0
+
+        fig, ax = _make_3d_axes(style)
+        combined_title = title or str(expr)
+        title_math = _to_math_label(combined_title)
+        xlabel_math = _to_math_label(str(x_var))
+        ylabel_math = _to_math_label(str(y_var))
+        zlabel_math = _to_math_label(f"f({x_var},{y_var})")
+
+        def draw(idx: int):
+            ax.clear()
+            ax.plot_surface(X, Y, all_Z[idx], cmap=style.colormap, alpha=style.alpha,
+                            linewidth=0, antialiased=True)
+            ax.set_zlim(zmin, zmax)
+            ax.set_title(f"{title_math} ({anim_var}={a_vals[idx]:.2f})", fontsize=12)
+            ax.set_xlabel(xlabel_math, fontsize=9)
+            ax.set_ylabel(ylabel_math, fontsize=9)
+            ax.set_zlabel(zlabel_math, fontsize=9)
+
+        draw(0)
+
+        def update(frame_idx: int):
+            draw(frame_idx)
+            return []
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
+def _plot_animation_wireframe_blocking(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    anim_var: sympy.Symbol,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    title: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        n = min(ANIM_GRID_POINTS, 50)
+        X, Y = _meshgrid(x_range, y_range, n)
+        f = _lambdify3(expr, x_var, y_var, anim_var)
+
+        a_vals = _anim_param_values()
+        all_Z = [_eval2(lambda X, Y, a=a: f(X, Y, a), X, Y) for a in a_vals]
+
+        flat = np.concatenate([Z.ravel() for Z in all_Z])
+        valid = flat[np.isfinite(flat)]
+        zmin, zmax = (float(valid.min()), float(valid.max())) if len(valid) else (-1.0, 1.0)
+        if zmin == zmax:
+            zmin, zmax = zmin - 1.0, zmax + 1.0
+
+        fig, ax = _make_3d_axes(style)
+        combined_title = title or str(expr)
+        title_math = _to_math_label(combined_title)
+        xlabel_math = _to_math_label(str(x_var))
+        ylabel_math = _to_math_label(str(y_var))
+        zlabel_math = _to_math_label(f"f({x_var},{y_var})")
+
+        def draw(idx: int):
+            ax.clear()
+            ax.plot_wireframe(X, Y, all_Z[idx], color=style.color,
+                              linewidth=style.line_width)
+            ax.set_zlim(zmin, zmax)
+            ax.set_title(f"{title_math} ({anim_var}={a_vals[idx]:.2f})", fontsize=12)
+            ax.set_xlabel(xlabel_math, fontsize=9)
+            ax.set_ylabel(ylabel_math, fontsize=9)
+            ax.set_zlabel(zlabel_math, fontsize=9)
+
+        draw(0)
+
+        def update(frame_idx: int):
+            draw(frame_idx)
+            return []
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
+def _plot_animation_parametric_3d_blocking(
+    x_expr: sympy.Expr,
+    y_expr: sympy.Expr,
+    z_expr: sympy.Expr,
+    t_var: sympy.Symbol,
+    anim_var: sympy.Symbol,
+    t_min: float,
+    t_max: float,
+    title: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        ts = np.linspace(t_min, t_max, ANIM_PARAM_POINTS)
+        fx = _lambdify2(x_expr, t_var, anim_var)
+        fy = _lambdify2(y_expr, t_var, anim_var)
+        fz = _lambdify2(z_expr, t_var, anim_var)
+
+        a_vals = _anim_param_values()
+        all_xs, all_ys, all_zs = [], [], []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for a in a_vals:
+                all_xs.append(np.asarray(fx(ts, a), dtype=float))
+                all_ys.append(np.asarray(fy(ts, a), dtype=float))
+                all_zs.append(np.asarray(fz(ts, a), dtype=float))
+
+        def _bounds(arrs):
+            flat = np.concatenate(arrs)
+            v = flat[np.isfinite(flat)]
+            if not len(v):
+                return -1.0, 1.0
+            lo, hi = float(v.min()), float(v.max())
+            pad = (hi - lo) * 0.1 or 1.0
+            return lo - pad, hi + pad
+
+        xlim = _bounds(all_xs)
+        ylim = _bounds(all_ys)
+        zlim = _bounds(all_zs)
+
+        fig, ax = _make_3d_axes(style)
+        combined_title = title or f"({x_expr}, {y_expr}, {z_expr})"
+
+        def draw(idx: int):
+            ax.clear()
+            ax.plot(all_xs[idx], all_ys[idx], all_zs[idx],
+                    color=style.color, linewidth=style.line_width)
+            ax.set_xlim(*xlim)
+            ax.set_ylim(*ylim)
+            ax.set_zlim(*zlim)
+            ax.set_title(f"{combined_title} ({anim_var}={a_vals[idx]:.2f})", fontsize=12)
+            ax.set_xlabel("x", fontsize=9)
+            ax.set_ylabel("y", fontsize=9)
+            ax.set_zlabel("z", fontsize=9)
+
+        draw(0)
+
+        def update(frame_idx: int):
+            draw(frame_idx)
+            return []
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
+async def plot_animation(cfg) -> discord.File:
     from cogs.plot_engine import _clean_sympy_expr, _sympy_expr
+
     anim_var = sympy.Symbol(cfg.anim_param or "a")
+    style = cfg.to_style()
+    pt = cfg.plot_type
 
-    exprs = [_sympy_expr(_clean_sympy_expr(cfg.expr_main), x, anim_var)]
-    for e in cfg.additional_exprs:
-        try:
-            exprs.append(_sympy_expr(_clean_sympy_expr(e), x, anim_var))
-        except Exception:
-            pass  # skip unparsable extras, same as the static multi-plot path
+    if pt == "function":
+        x = sympy.Symbol("x")
+        exprs = [_sympy_expr(_clean_sympy_expr(cfg.expr_main), x, anim_var)]
+        for e in cfg.additional_exprs:
+            try:
+                exprs.append(_sympy_expr(_clean_sympy_expr(e), x, anim_var))
+            except Exception:
+                pass
+        buf = await _run_blocking(
+            _plot_animation_function_blocking,
+            exprs, x, anim_var, cfg.x_min, cfg.x_max, cfg.title, style,
+        )
 
-    buf = await _run_blocking(
-        _plot_animation_function_blocking,
-        exprs, x, anim_var, cfg.x_min, cfg.x_max, cfg.title, cfg.to_style()
-    )
+    elif pt in ("contour", "surface", "wireframe"):
+        x, y = sympy.Symbol("x"), sympy.Symbol("y")
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y, anim_var)
+        x_range, y_range = (cfg.x_min, cfg.x_max), (cfg.y_min, cfg.y_max)
+        if pt == "contour":
+            buf = await _run_blocking(
+                _plot_animation_contour_blocking,
+                expr, x, y, anim_var, x_range, y_range, cfg.title, cfg.levels, style,
+            )
+        elif pt == "surface":
+            buf = await _run_blocking(
+                _plot_animation_surface_blocking,
+                expr, x, y, anim_var, x_range, y_range, cfg.title, style,
+            )
+        else:
+            buf = await _run_blocking(
+                _plot_animation_wireframe_blocking,
+                expr, x, y, anim_var, x_range, y_range, cfg.title, style,
+            )
+
+    elif pt == "vector-field":
+        x, y = sympy.Symbol("x"), sympy.Symbol("y")
+        u = _sympy_expr(_clean_sympy_expr(cfg.expr_u), x, y, anim_var)
+        v = _sympy_expr(_clean_sympy_expr(cfg.expr_v), x, y, anim_var)
+        buf = await _run_blocking(
+            _plot_animation_vector_field_blocking,
+            u, v, x, y, anim_var, (cfg.x_min, cfg.x_max), (cfg.y_min, cfg.y_max),
+            cfg.title, cfg.stream, style,
+        )
+
+    elif pt in ("parametric-2d", "parametric-3d"):
+        t = sympy.Symbol("t")
+        xe = _sympy_expr(_clean_sympy_expr(cfg.expr_x), t, anim_var)
+        ye = _sympy_expr(_clean_sympy_expr(cfg.expr_y), t, anim_var)
+        if pt == "parametric-2d":
+            buf = await _run_blocking(
+                _plot_animation_parametric_2d_blocking,
+                xe, ye, t, anim_var, cfg.t_min, cfg.t_max, cfg.title, style,
+            )
+        else:
+            ze = _sympy_expr(_clean_sympy_expr(cfg.expr_z), t, anim_var)
+            buf = await _run_blocking(
+                _plot_animation_parametric_3d_blocking,
+                xe, ye, ze, t, anim_var, cfg.t_min, cfg.t_max, cfg.title, style,
+            )
+
+    elif pt in ("scatter", "scatter-3d"):
+        raise ValueError(
+            "Animation isn't supported for scatter plots — there's no expression "
+            "to vary a parameter over, just raw data points. Try function, "
+            "contour, surface, wireframe, vector-field, or parametric instead."
+        )
+
+    else:
+        raise ValueError(f"Animation isn't supported for plot type `{pt}` yet.")
+
     return discord.File(buf, filename="anim.gif")
 
 
+# ---------------------------------------------------------------------------
+# Public exports
+# ---------------------------------------------------------------------------
 
 __all__ = [
-    # Data classes
     "StyleOptions",
     "PlotSpec",
-    # 2-D single-variable
     "plot_function",
     "plot_points",
-    # 2-D multivariable
+    "plot_polar",
     "plot_contour",
     "plot_vector_field",
     "plot_parametric_2d",
-    # 3-D
     "plot_surface",
     "plot_wireframe",
     "plot_parametric_3d",
     "plot_scatter_3d",
-    # Multi-panel
     "plot_multi",
+    "plot_animation",
 ]
