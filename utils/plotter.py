@@ -292,6 +292,8 @@ def _eval1(f: Callable, xs: np.ndarray) -> np.ndarray:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         ys = np.asarray(f(xs), dtype=float)
+    if ys.shape == ():
+        ys = np.full_like(xs, float(ys), dtype=float)
     return np.where(np.isfinite(ys), np.clip(ys, -Y_CLIP, Y_CLIP), np.nan)
 
 
@@ -332,6 +334,121 @@ def _smart_ylim(
     return (lo - pad, hi + pad)
 
 
+def _as_float(value: sympy.Basic) -> Optional[float]:
+    try:
+        numeric = float(sympy.N(value))
+    except Exception:
+        return None
+    if np.isfinite(numeric):
+        return numeric
+    return None
+
+
+def _finite_points_in_window(
+    values: Sequence[sympy.Basic],
+    lo: float,
+    hi: float,
+) -> List[float]:
+    points: List[float] = []
+    for value in values:
+        numeric = _as_float(value)
+        if numeric is not None and lo <= numeric <= hi:
+            points.append(numeric)
+    return points
+
+
+def _interesting_x_points(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    lo: float,
+    hi: float,
+) -> List[float]:
+    points: List[float] = []
+    for candidate in (expr, sympy.diff(expr, var)):
+        try:
+            solved = sympy.solve(candidate, var)
+        except Exception:
+            solved = []
+        points.extend(_finite_points_in_window(solved[:16], lo, hi))
+
+    try:
+        singular = sympy.singularities(expr, var)
+    except Exception:
+        singular = []
+    if singular is not sympy.S.EmptySet:
+        try:
+            points.extend(_finite_points_in_window(list(singular)[:16], lo, hi))
+        except Exception:
+            pass
+
+    return sorted(set(round(p, 12) for p in points))
+
+
+def _auto_domain(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    x_min: float,
+    x_max: float,
+    style: StyleOptions,
+) -> Tuple[float, float]:
+    if style.x_log or style.x_lim is not None:
+        return x_min, x_max
+    if abs(x_min + 10.0) > 1e-9 or abs(x_max - 10.0) > 1e-9:
+        return x_min, x_max
+
+    points = _interesting_x_points(expr, var, -50.0, 50.0)
+    if not points:
+        return x_min, x_max
+
+    lo, hi = min(points), max(points)
+    span = max(hi - lo, 4.0)
+    pad = max(span * 0.35, 1.0)
+    return lo - pad, hi + pad
+
+
+def _singularities_in_range(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    x_min: float,
+    x_max: float,
+) -> List[float]:
+    try:
+        singular = sympy.singularities(expr, var)
+    except Exception:
+        return []
+    if singular is sympy.S.EmptySet:
+        return []
+    try:
+        return _finite_points_in_window(list(singular)[:32], x_min, x_max)
+    except Exception:
+        return []
+
+
+def _insert_function_gaps(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    singularities: Sequence[float],
+) -> np.ndarray:
+    gapped = np.array(ys, copy=True)
+    if xs.size < 2:
+        return gapped
+
+    step = float(np.nanmedian(np.diff(xs)))
+    gap_width = max(abs(step) * 2.5, 1e-12)
+    for point in singularities:
+        gapped[np.abs(xs - point) <= gap_width] = np.nan
+
+    finite = np.isfinite(gapped)
+    diffs = np.abs(np.diff(gapped))
+    finite_pairs = finite[:-1] & finite[1:]
+    finite_values = np.abs(gapped[finite])
+    scale = float(np.nanpercentile(finite_values, 95)) if finite_values.size else 1.0
+    jump_threshold = max(scale * 8.0, 100.0)
+    jumps = np.where(finite_pairs & (diffs > jump_threshold))[0]
+    gapped[jumps + 1] = np.nan
+    return gapped
+
+
 async def _run_blocking(fn: Callable, *args) -> io.BytesIO:
     loop = asyncio.get_running_loop()
     try:
@@ -361,13 +478,15 @@ def _plot_function_blocking(
         )
 
     with matplotlib.rc_context(rc=style.rc_overrides()):
+        x_min, x_max = _auto_domain(expr, var, x_min, x_max, style)
         if style.x_log:
             xs = np.logspace(np.log10(x_min), np.log10(x_max), n_1d)
         else:
             xs = np.linspace(x_min, x_max, n_1d)
 
         f  = _lambdify1(expr, var)
-        ys = _eval1(f, xs)
+        singularities = _singularities_in_range(expr, var, x_min, x_max)
+        ys = _insert_function_gaps(xs, _eval1(f, xs), singularities)
 
         fig, ax = _white_fig(style)
         ax.plot(xs, ys, label=str(expr))
@@ -380,7 +499,10 @@ def _plot_function_blocking(
         if additional_exprs:
             for extra in additional_exprs:
                 f_extra = _lambdify1(extra, var)
-                ys_extra = _eval1(f_extra, xs)
+                extra_singularities = _singularities_in_range(extra, var, x_min, x_max)
+                ys_extra = _insert_function_gaps(
+                    xs, _eval1(f_extra, xs), extra_singularities,
+                )
                 ax.plot(xs, ys_extra, label=str(extra))
                 if style.fill_below:
                     fill_c = style.fill_color if style.fill_color else style.color
@@ -393,12 +515,99 @@ def _plot_function_blocking(
         )
 
         all_ys = ys if additional_exprs is None else np.concatenate(
-            [ys] + [_eval1(_lambdify1(e, var), xs) for e in (additional_exprs or [])]
+            [ys] + [
+                _insert_function_gaps(
+                    xs,
+                    _eval1(_lambdify1(e, var), xs),
+                    _singularities_in_range(e, var, x_min, x_max),
+                )
+                for e in (additional_exprs or [])
+            ]
         )
         ylim = _smart_ylim(all_ys, style)
         if ylim is not None:
             ax.set_ylim(*ylim)
 
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
+def _plot_riemann_blocking(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    a: float,
+    b: float,
+    n: int,
+    method: str,
+    title: str,
+    style: StyleOptions,
+    n_1d: int = PLOT_POINTS,
+) -> io.BytesIO:
+    if a == b:
+        raise ValueError("Riemann bounds must be different.")
+
+    method = method.lower().strip()
+    if method not in ("left", "right", "midpoint"):
+        raise ValueError("Riemann method must be left, right, or midpoint.")
+
+    n = max(1, min(500, int(n)))
+    lo, hi = (a, b) if a < b else (b, a)
+
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        xs = np.linspace(lo, hi, n_1d)
+        f = _lambdify1(expr, var)
+        singularities = _singularities_in_range(expr, var, lo, hi)
+        ys = _insert_function_gaps(xs, _eval1(f, xs), singularities)
+
+        edges = np.linspace(a, b, n + 1)
+        width = (b - a) / n
+        if method == "left":
+            sample_xs = edges[:-1]
+        elif method == "right":
+            sample_xs = edges[1:]
+        else:
+            sample_xs = (edges[:-1] + edges[1:]) / 2
+        heights = _eval1(f, sample_xs)
+
+        fig, ax = _white_fig(style)
+        rect_color = style.fill_color or style.color
+        ax.bar(
+            edges[:-1],
+            heights,
+            width=width,
+            align="edge",
+            alpha=0.25,
+            color=rect_color,
+            edgecolor=style.color,
+            linewidth=0.8,
+            label=f"{method} rectangles (n={n})",
+        )
+        ax.plot(xs, ys, color=style.color, linewidth=style.line_width,
+                linestyle=style.line_style, label=str(expr), zorder=3)
+
+        finite_heights = heights[np.isfinite(heights)]
+        estimate = float(np.sum(finite_heights) * width) if finite_heights.size == n else np.nan
+        if np.isfinite(estimate):
+            label = f"estimate = {estimate:.6g}"
+            ax.text(
+                0.02, 0.96, label,
+                ha="left", va="top", transform=ax.transAxes,
+                fontsize=9,
+                bbox={"boxstyle": "round,pad=0.25", "alpha": 0.7, "facecolor": "white"},
+            )
+
+        _apply_axes_style(
+            ax,
+            title or f"Riemann sum: {expr}",
+            str(var),
+            f"f({var})",
+            style.show_grid,
+            style=style,
+        )
+        ylim = _smart_ylim(np.concatenate([ys, heights]), style)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+        ax.legend(loc="best")
         fig.tight_layout()
         return _save_fig_to_bytes(fig, style.dpi)
 
@@ -1149,6 +1358,24 @@ async def plot_function(
         expr, var, x_min, x_max, title, style, additional_exprs, resolution_1d,
     )
     return discord.File(buf, filename="plot.png")
+
+
+async def plot_riemann(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+    a: float,
+    b: float,
+    n: int = 8,
+    method: str = "left",
+    title: str = "",
+    style: StyleOptions = _DEFAULT_STYLE,
+    resolution_1d: int = PLOT_POINTS,
+) -> discord.File:
+    buf = await _run_blocking(
+        _plot_riemann_blocking,
+        expr, var, a, b, n, method, title, style, resolution_1d,
+    )
+    return discord.File(buf, filename="riemann.png")
 
 
 async def plot_points(
@@ -1981,6 +2208,7 @@ __all__ = [
     "StyleOptions",
     "PlotSpec",
     "plot_function",
+    "plot_riemann",
     "plot_points",
     "plot_polar",
     "plot_implicit",

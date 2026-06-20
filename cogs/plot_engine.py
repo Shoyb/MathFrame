@@ -32,6 +32,7 @@ from utils.plotter import (
     plot_parametric_3d,
     plot_points,
     plot_polar,
+    plot_riemann,
     plot_scatter_3d,
     plot_surface,
     plot_vector_field,
@@ -60,6 +61,7 @@ PLOT_TYPES = [
     "polar",
     "implicit",
     "inequality",
+    "riemann",
     "histogram",
     "errorbar",
     "heatmap",
@@ -137,6 +139,8 @@ class PlotConfig:
     inequality_op: str = "<="
     hist_bins: int = 20
     box_violin: str = "box"
+    riemann_n: int = 8
+    riemann_method: str = "left"
 
     x_lim_min: Optional[float] = None
     x_lim_max: Optional[float] = None
@@ -275,6 +279,7 @@ def _type_hint(pt: str) -> str:
         "polar":         "polar curve r(θ)",
         "implicit":      "implicit curve f(x,y)=k",
         "inequality":    "shaded region f(x,y) <= k",
+        "riemann":       "Riemann rectangles under f(x)",
         "histogram":     "distribution of raw data",
         "errorbar":      "points with vertical errors",
         "heatmap":       "imshow heatmap of f(x,y)",
@@ -334,6 +339,12 @@ def _config_embed(cfg: PlotConfig) -> discord.Embed:
         embed.add_field(name="Inequality", value=f"`{cfg.expr_main} {cfg.inequality_op} {cfg.implicit_rhs}`", inline=False)
         embed.add_field(name="x range", value=f"[{cfg.x_min}, {cfg.x_max}]", inline=True)
         embed.add_field(name="y range", value=f"[{cfg.y_min}, {cfg.y_max}]", inline=True)
+
+    elif cfg.plot_type == "riemann":
+        embed.add_field(name="f(x)", value=f"`{cfg.expr_main}`", inline=False)
+        embed.add_field(name="Bounds", value=f"[{cfg.x_min}, {cfg.x_max}]", inline=True)
+        embed.add_field(name="Rectangles", value=f"`{cfg.riemann_n}`", inline=True)
+        embed.add_field(name="Method", value=f"`{cfg.riemann_method}`", inline=True)
 
     elif cfg.plot_type == "vector-field":
         embed.add_field(name="u(x,y)", value=f"`{cfg.expr_u}`",                    inline=True)
