@@ -21,7 +21,13 @@ from utils.plotter import (
     PlotSpec,
     StyleOptions,
     plot_contour,
+    plot_boxplot,
+    plot_errorbar,
     plot_function,
+    plot_heatmap,
+    plot_histogram,
+    plot_implicit,
+    plot_inequality,
     plot_parametric_2d,
     plot_parametric_3d,
     plot_points,
@@ -31,6 +37,10 @@ from utils.plotter import (
     plot_vector_field,
     plot_wireframe,
     plot_multi,
+)
+from utils.expr_utils import (
+    _clean_sympy_expr as _shared_clean_sympy_expr,
+    _sympy_expr as _shared_sympy_expr,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,6 +58,12 @@ PLOT_TYPES = [
     "scatter",
     "scatter-3d",
     "polar",
+    "implicit",
+    "inequality",
+    "histogram",
+    "errorbar",
+    "heatmap",
+    "boxplot",
 ]
 
 COLORMAPS = [
@@ -117,6 +133,10 @@ class PlotConfig:
     anim_param: str = ""
 
     theta_symbol: str = "theta"
+    implicit_rhs: float = 0.0
+    inequality_op: str = "<="
+    hist_bins: int = 20
+    box_violin: str = "box"
 
     x_lim_min: Optional[float] = None
     x_lim_max: Optional[float] = None
@@ -202,16 +222,7 @@ _ASSIGNMENT_PREFIX_RE = re.compile(r'^\s*[A-Za-z_]\w*\s*(?:\([^)]*\))?\s*=(?!=)\
 
 
 def _clean_sympy_expr(s: str) -> str:
-    """Smart auto-correction for common syntax errors."""
-    if not s: return ""
-    s = s.strip()
-    m = _ASSIGNMENT_PREFIX_RE.match(s)
-    if m:
-        s = m.group(1).strip()
-    s = s.replace("^", "**")
-    s = re.sub(r'\be\^', 'exp', s)
-    s = re.sub(r'\be\*\*', 'exp', s)
-    return s
+    return _shared_clean_sympy_expr(s)
 
 
 def _parse_float(s: str, default: float) -> float:
@@ -247,11 +258,7 @@ def _parse_optional_float(s: str) -> Optional[float]:
 
 
 def _sympy_expr(s: str, *syms: sympy.Symbol) -> sympy.Expr:
-    try:
-        local = {str(sym): sym for sym in syms}
-        return sympy.sympify(s, locals=local)
-    except Exception as exc:
-        raise ValueError(f"Cannot parse expression `{s}`: {exc}") from exc
+    return _shared_sympy_expr(s, *syms)
 
 
 def _type_hint(pt: str) -> str:
@@ -266,6 +273,12 @@ def _type_hint(pt: str) -> str:
         "scatter":       "scatter plot of (xs, ys)",
         "scatter-3d":    "3-D scatter of (xs, ys, zs)",
         "polar":         "polar curve r(θ)",
+        "implicit":      "implicit curve f(x,y)=k",
+        "inequality":    "shaded region f(x,y) <= k",
+        "histogram":     "distribution of raw data",
+        "errorbar":      "points with vertical errors",
+        "heatmap":       "imshow heatmap of f(x,y)",
+        "boxplot":       "box or violin grouped data",
     }.get(pt, "")
 
 
@@ -307,10 +320,20 @@ def _config_embed(cfg: PlotConfig) -> discord.Embed:
             embed.add_field(name="Extra f(x)", value=", ".join(f"`{e}`" for e in cfg.additional_exprs), inline=False)
         embed.add_field(name="Domain", value=f"x ∈ [{cfg.x_min}, {cfg.x_max}]", inline=True)
 
-    elif cfg.plot_type in ("contour", "surface", "wireframe"):
+    elif cfg.plot_type in ("contour", "surface", "wireframe", "heatmap"):
         embed.add_field(name="f(x,y)",  value=f"`{cfg.expr_main}`",               inline=False)
         embed.add_field(name="x range", value=f"[{cfg.x_min}, {cfg.x_max}]",      inline=True)
         embed.add_field(name="y range", value=f"[{cfg.y_min}, {cfg.y_max}]",      inline=True)
+
+    elif cfg.plot_type == "implicit":
+        embed.add_field(name="Equation", value=f"`{cfg.expr_main} = {cfg.implicit_rhs}`", inline=False)
+        embed.add_field(name="x range", value=f"[{cfg.x_min}, {cfg.x_max}]", inline=True)
+        embed.add_field(name="y range", value=f"[{cfg.y_min}, {cfg.y_max}]", inline=True)
+
+    elif cfg.plot_type == "inequality":
+        embed.add_field(name="Inequality", value=f"`{cfg.expr_main} {cfg.inequality_op} {cfg.implicit_rhs}`", inline=False)
+        embed.add_field(name="x range", value=f"[{cfg.x_min}, {cfg.x_max}]", inline=True)
+        embed.add_field(name="y range", value=f"[{cfg.y_min}, {cfg.y_max}]", inline=True)
 
     elif cfg.plot_type == "vector-field":
         embed.add_field(name="u(x,y)", value=f"`{cfg.expr_u}`",                    inline=True)
@@ -328,11 +351,21 @@ def _config_embed(cfg: PlotConfig) -> discord.Embed:
         embed.add_field(name="z(t)",    value=f"`{cfg.expr_z}`",                   inline=True)
         embed.add_field(name="t range", value=f"[{cfg.t_min}, {cfg.t_max}]",       inline=True)
 
-    elif cfg.plot_type in ("scatter", "scatter-3d"):
+    elif cfg.plot_type in ("scatter", "scatter-3d", "errorbar"):
         embed.add_field(name="xs", value=f"`{cfg.scatter_xs[:60]}`",               inline=False)
         embed.add_field(name="ys", value=f"`{cfg.scatter_ys[:60]}`",               inline=False)
         if cfg.plot_type == "scatter-3d":
             embed.add_field(name="zs", value=f"`{cfg.scatter_zs[:60]}`",           inline=False)
+        elif cfg.plot_type == "errorbar":
+            embed.add_field(name="y errors", value=f"`{cfg.expr_z[:60]}`",          inline=False)
+
+    elif cfg.plot_type == "histogram":
+        embed.add_field(name="data", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
+        embed.add_field(name="bins", value=f"`{cfg.hist_bins}`", inline=True)
+
+    elif cfg.plot_type == "boxplot":
+        embed.add_field(name="groups", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
+        embed.add_field(name="mode", value=f"`{cfg.box_violin}`", inline=True)
 
     elif cfg.plot_type == "polar":
         embed.add_field(name="r(θ)",     value=f"`{cfg.expr_main}`",                inline=False)
@@ -448,8 +481,13 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
         pt = cfg.plot_type
         if pt == "function":
             self.expr_a.default = cfg.expr_main
-        elif pt in ("contour", "surface", "wireframe"):
+        elif pt in ("contour", "surface", "wireframe", "heatmap", "implicit", "inequality"):
             self.expr_a.default = cfg.expr_main
+            if pt == "implicit":
+                self.expr_b.default = str(cfg.implicit_rhs)
+            elif pt == "inequality":
+                self.expr_b.default = cfg.inequality_op
+                self.expr_c.default = str(cfg.implicit_rhs)
         elif pt == "vector-field":
             self.expr_a.default = cfg.expr_u
             self.expr_b.default = cfg.expr_v
@@ -460,11 +498,19 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
             self.expr_a.default = cfg.expr_x
             self.expr_b.default = cfg.expr_y
             self.expr_c.default = cfg.expr_z
-        elif pt in ("scatter", "scatter-3d"):
+        elif pt in ("scatter", "scatter-3d", "errorbar"):
             self.expr_a.default = cfg.scatter_xs
             self.expr_b.default = cfg.scatter_ys
             if pt == "scatter-3d":
                 self.expr_c.default = cfg.scatter_zs
+            elif pt == "errorbar":
+                self.expr_c.default = cfg.expr_z
+        elif pt == "histogram":
+            self.expr_a.default = cfg.scatter_xs
+            self.expr_b.default = str(cfg.hist_bins)
+        elif pt == "boxplot":
+            self.expr_a.default = cfg.scatter_xs
+            self.expr_b.default = cfg.box_violin
 
         elif pt == "polar":
             self.expr_a.default = cfg.expr_main
@@ -486,8 +532,15 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
 
         if pt == "function":
             if a: cfg.expr_main = a
-        elif pt in ("contour", "surface", "wireframe"):
+        elif pt in ("contour", "surface", "wireframe", "heatmap", "implicit", "inequality"):
             if a: cfg.expr_main = a
+            if pt == "implicit" and b:
+                cfg.implicit_rhs = _parse_float(b, cfg.implicit_rhs)
+            elif pt == "inequality":
+                if b in ("<", "<=", ">", ">="):
+                    cfg.inequality_op = b
+                if c:
+                    cfg.implicit_rhs = _parse_float(c, cfg.implicit_rhs)
         elif pt == "vector-field":
             if a: cfg.expr_u = a
             if b: cfg.expr_v = b
@@ -498,10 +551,18 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
             if a: cfg.expr_x = a
             if b: cfg.expr_y = b
             if c: cfg.expr_z = c
-        elif pt in ("scatter", "scatter-3d"):
+        elif pt in ("scatter", "scatter-3d", "errorbar"):
             if a: cfg.scatter_xs = a
             if b: cfg.scatter_ys = b
-            if c: cfg.scatter_zs = c
+            if c and pt == "scatter-3d": cfg.scatter_zs = c
+            if c and pt == "errorbar": cfg.expr_z = c
+        elif pt == "histogram":
+            if a: cfg.scatter_xs = a
+            if b: cfg.hist_bins = max(1, min(500, _parse_int(b, cfg.hist_bins)))
+        elif pt == "boxplot":
+            if a: cfg.scatter_xs = a
+            if b and b.lower() in ("box", "violin"):
+                cfg.box_violin = b.lower()
         elif pt == "polar":
             if a: cfg.expr_main    = a
             if b: cfg.theta_symbol = b
@@ -787,6 +848,42 @@ async def _render(cfg: PlotConfig) -> discord.File:
             resolution_2d=cfg.resolution_2d,
         )
 
+    elif pt == "implicit":
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y)
+        return await plot_implicit(
+            expr, x, y,
+            x_range=(cfg.x_min, cfg.x_max),
+            y_range=(cfg.y_min, cfg.y_max),
+            rhs=cfg.implicit_rhs,
+            title=cfg.title,
+            style=style,
+            resolution_2d=cfg.resolution_2d,
+        )
+
+    elif pt == "inequality":
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y)
+        return await plot_inequality(
+            expr, x, y,
+            x_range=(cfg.x_min, cfg.x_max),
+            y_range=(cfg.y_min, cfg.y_max),
+            op=cfg.inequality_op,
+            rhs=cfg.implicit_rhs,
+            title=cfg.title,
+            style=style,
+            resolution_2d=cfg.resolution_2d,
+        )
+
+    elif pt == "heatmap":
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y)
+        return await plot_heatmap(
+            expr, x, y,
+            x_range=(cfg.x_min, cfg.x_max),
+            y_range=(cfg.y_min, cfg.y_max),
+            title=cfg.title,
+            style=style,
+            resolution_2d=cfg.resolution_2d,
+        )
+
     elif pt == "vector-field":
         u = _sympy_expr(_clean_sympy_expr(cfg.expr_u), x, y)
         v = _sympy_expr(_clean_sympy_expr(cfg.expr_v), x, y)
@@ -871,6 +968,39 @@ async def _render(cfg: PlotConfig) -> discord.File:
             xlabel=cfg.xlabel,
             ylabel=cfg.ylabel,
             zlabel=cfg.zlabel,
+            style=style,
+        )
+
+    elif pt == "histogram":
+        values = _parse_floatlist(cfg.scatter_xs)
+        return await plot_histogram(
+            values,
+            bins=cfg.hist_bins,
+            title=cfg.title,
+            xlabel=cfg.xlabel or "value",
+            ylabel=cfg.ylabel or "count",
+            style=style,
+        )
+
+    elif pt == "errorbar":
+        xs_list = _parse_floatlist(cfg.scatter_xs)
+        ys_list = _parse_floatlist(cfg.scatter_ys)
+        err_list = _parse_floatlist(cfg.expr_z)
+        return await plot_errorbar(
+            xs_list, ys_list, err_list,
+            title=cfg.title,
+            xlabel=cfg.xlabel,
+            ylabel=cfg.ylabel,
+            style=style,
+        )
+
+    elif pt == "boxplot":
+        groups = [_parse_floatlist(group) for group in cfg.scatter_xs.split("|")]
+        return await plot_boxplot(
+            groups,
+            mode=cfg.box_violin,
+            title=cfg.title,
+            ylabel=cfg.ylabel or "value",
             style=style,
         )
 
@@ -1125,8 +1255,12 @@ class PlotEngineView(ui.View):
                 value="\n".join(f"`{e}`" for e in exprs),
                 inline=False,
             )
-        elif pt in ("contour", "surface", "wireframe"):
+        elif pt in ("contour", "surface", "wireframe", "heatmap"):
             embed.add_field(name="f(x, y)", value=f"`{cfg.expr_main}`", inline=False)
+        elif pt == "implicit":
+            embed.add_field(name="Equation", value=f"`{cfg.expr_main} = {cfg.implicit_rhs}`", inline=False)
+        elif pt == "inequality":
+            embed.add_field(name="Inequality", value=f"`{cfg.expr_main} {cfg.inequality_op} {cfg.implicit_rhs}`", inline=False)
         elif pt == "vector-field":
             embed.add_field(name="u(x, y)", value=f"`{cfg.expr_u}`", inline=True)
             embed.add_field(name="v(x, y)", value=f"`{cfg.expr_v}`", inline=True)
@@ -1138,11 +1272,19 @@ class PlotEngineView(ui.View):
             embed.add_field(name="x(t)", value=f"`{cfg.expr_x}`", inline=True)
             embed.add_field(name="y(t)", value=f"`{cfg.expr_y}`", inline=True)
             embed.add_field(name="z(t)", value=f"`{cfg.expr_z}`", inline=True)
-        elif pt in ("scatter", "scatter-3d"):
+        elif pt in ("scatter", "scatter-3d", "errorbar"):
             embed.add_field(name="xs", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
             embed.add_field(name="ys", value=f"`{cfg.scatter_ys[:80]}`", inline=False)
             if pt == "scatter-3d":
                 embed.add_field(name="zs", value=f"`{cfg.scatter_zs[:80]}`", inline=False)
+            elif pt == "errorbar":
+                embed.add_field(name="y errors", value=f"`{cfg.expr_z[:80]}`", inline=False)
+        elif pt == "histogram":
+            embed.add_field(name="data", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
+            embed.add_field(name="bins", value=f"`{cfg.hist_bins}`", inline=True)
+        elif pt == "boxplot":
+            embed.add_field(name="groups", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
+            embed.add_field(name="mode", value=f"`{cfg.box_violin}`", inline=True)
         elif pt == "polar":
             all_polar = [cfg.expr_main] + list(cfg.additional_exprs)
             embed.add_field(
@@ -1159,7 +1301,7 @@ class PlotEngineView(ui.View):
                       else f"t ∈ [{cfg.t_min}, {cfg.t_max}]",
                 inline=False,
             )
-        elif pt not in ("scatter", "scatter-3d", "polar"):
+        elif pt not in ("scatter", "scatter-3d", "errorbar", "histogram", "boxplot", "polar"):
             domain_lines = [f"x ∈ [{cfg.x_min}, {cfg.x_max}]"]
             if pt not in ("function",):
                 domain_lines.append(f"y ∈ [{cfg.y_min}, {cfg.y_max}]")

@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt                        # noqa: E402
 from matplotlib import cm                              # noqa: E402
 from matplotlib.collections import LineCollection      # noqa: E402
 from mpl_toolkits.mplot3d import Axes3D               # noqa: F401 (registers projection)
+from utils.expr_utils import _clean_sympy_expr, _sympy_expr
 
 # ---------------------------------------------------------------------------
 # Module-level constants  (read-only after import — never mutate at runtime)
@@ -150,7 +151,8 @@ class PlotSpec:
 
     kind : str
         One of ``"function"``, ``"points"``, ``"contour"``,
-        ``"vector_field"``, ``"parametric_2d"``, ``"polar"``.
+        ``"vector_field"``, ``"parametric_2d"``, ``"polar"``,
+        ``"implicit"``, ``"histogram"``, ``"errorbar"``, or ``"heatmap"``.
     """
 
     kind: str
@@ -187,6 +189,10 @@ class PlotSpec:
     t_max:  float = 2 * float(sympy.pi)
 
     additional_exprs: List[sympy.Expr] = field(default_factory=list)
+    implicit_rhs: float = 0.0
+    inequality_op: str = "<="
+    hist_bins: int = 20
+    box_violin: str = "box"
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +204,10 @@ def _to_math_label(s: str) -> str:
         return s
     try:
         parsed = sympy.sympify(s)
-        return f"${sympy.latex(parsed)}$"
+        latex = sympy.latex(parsed)
+        if "\\begin" in latex or "\\end" in latex:
+            return str(parsed)
+        return f"${latex}$"
     except Exception:
         return s
 
@@ -784,6 +793,160 @@ def _plot_polar_blocking(
 
 # ── Multi-panel ─────────────────────────────────────────────────────────────
 
+def _plot_implicit_blocking(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    rhs: float,
+    title: str,
+    style: StyleOptions,
+    n_2d: int = GRID_POINTS,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        X, Y = _meshgrid(x_range, y_range, n=n_2d)
+        Z = _eval2(_lambdify2(expr, x_var, y_var), X, Y) - rhs
+
+        fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
+        cs = ax.contour(X, Y, Z, levels=[0.0], colors=[style.color],
+                        linewidths=[style.line_width])
+        if not cs.allsegs or not cs.allsegs[0]:
+            ax.text(0.5, 0.5, "No visible zero contour", ha="center",
+                    va="center", transform=ax.transAxes)
+
+        _apply_axes_style(ax, title or f"{expr} = {rhs:g}", str(x_var),
+                          str(y_var), style.show_grid, style=style)
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
+def _plot_inequality_blocking(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    op: str,
+    rhs: float,
+    title: str,
+    style: StyleOptions,
+    n_2d: int = GRID_POINTS,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        X, Y = _meshgrid(x_range, y_range, n=n_2d)
+        Z = _eval2(_lambdify2(expr, x_var, y_var), X, Y)
+        if op == "<":
+            mask = Z < rhs
+        elif op == "<=":
+            mask = Z <= rhs
+        elif op == ">":
+            mask = Z > rhs
+        elif op == ">=":
+            mask = Z >= rhs
+        else:
+            raise ValueError("inequality_op must be one of <, <=, >, >=.")
+
+        fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
+        ax.contourf(X, Y, mask.astype(float), levels=[0.5, 1.5],
+                    colors=[style.fill_color or style.color], alpha=0.25)
+        ax.contour(X, Y, Z - rhs, levels=[0.0], colors=[style.color],
+                   linewidths=[style.line_width])
+        _apply_axes_style(ax, title or f"{expr} {op} {rhs:g}", str(x_var),
+                          str(y_var), style.show_grid, style=style)
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
+def _plot_histogram_blocking(
+    values: list,
+    bins: int,
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        data = np.asarray(values, float)
+        fig, ax = _white_fig(style)
+        ax.hist(data, bins=bins, color=style.color, alpha=style.alpha,
+                edgecolor="black", linewidth=0.6)
+        _apply_axes_style(ax, title or "Histogram", xlabel, ylabel,
+                          style.show_grid, style=style)
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
+def _plot_errorbar_blocking(
+    xs: list,
+    ys: list,
+    yerr: list,
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        fig, ax = _white_fig(style)
+        ax.errorbar(np.asarray(xs, float), np.asarray(ys, float),
+                    yerr=np.asarray(yerr, float), fmt=style.marker or "o",
+                    color=style.color, capsize=4, linewidth=style.line_width)
+        _apply_axes_style(ax, title or "Error bar plot", xlabel, ylabel,
+                          style.show_grid, style=style)
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
+def _plot_heatmap_blocking(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    title: str,
+    style: StyleOptions,
+    n_2d: int = GRID_POINTS,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        X, Y = _meshgrid(x_range, y_range, n=n_2d)
+        Z = _eval2(_lambdify2(expr, x_var, y_var), X, Y)
+
+        fig, ax = _white_fig(style, figsize=(style.fig_width, style.fig_height))
+        im = ax.imshow(Z, origin="lower", cmap=style.colormap,
+                       extent=[x_range[0], x_range[1], y_range[0], y_range[1]],
+                       aspect="auto", alpha=style.alpha)
+        fig.colorbar(im, ax=ax, shrink=0.85, label=f"f({x_var},{y_var})")
+        _apply_axes_style(ax, title or str(expr), str(x_var), str(y_var),
+                          style.show_grid, style=style)
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
+def _plot_boxplot_blocking(
+    groups: list,
+    mode: str,
+    title: str,
+    ylabel: str,
+    style: StyleOptions,
+) -> io.BytesIO:
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        clean_groups = [np.asarray(g, float) for g in groups if len(g) > 0]
+        fig, ax = _white_fig(style)
+        if mode == "violin":
+            parts = ax.violinplot(clean_groups, showmeans=True, showmedians=True)
+            for body in parts["bodies"]:
+                body.set_facecolor(style.color)
+                body.set_alpha(style.alpha)
+        else:
+            ax.boxplot(clean_groups, patch_artist=True,
+                       boxprops={"facecolor": style.color, "alpha": style.alpha},
+                       medianprops={"color": "black"})
+        _apply_axes_style(ax, title or "Box plot", "group", ylabel,
+                          style.show_grid, style=style)
+        fig.tight_layout()
+        return _save_fig_to_bytes(fig, style.dpi)
+
+
 def _render_spec_onto_axes(
     spec:          PlotSpec,
     ax:            plt.Axes,
@@ -1169,6 +1332,114 @@ async def plot_polar(
         additional_exprs, resolution_1d,
     )
     return discord.File(buf, filename="polar.png")
+
+
+async def plot_implicit(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    x_range: Tuple[float, float] = (-5.0, 5.0),
+    y_range: Tuple[float, float] = (-5.0, 5.0),
+    rhs: float = 0.0,
+    title: str = "",
+    style: StyleOptions = _DEFAULT_STYLE,
+    resolution_2d: int = GRID_POINTS,
+) -> discord.File:
+    buf = await _run_blocking(
+        _plot_implicit_blocking,
+        expr, x_var, y_var, x_range, y_range, rhs, title, style, resolution_2d,
+    )
+    return discord.File(buf, filename="implicit.png")
+
+
+async def plot_inequality(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    x_range: Tuple[float, float] = (-5.0, 5.0),
+    y_range: Tuple[float, float] = (-5.0, 5.0),
+    op: str = "<=",
+    rhs: float = 0.0,
+    title: str = "",
+    style: StyleOptions = _DEFAULT_STYLE,
+    resolution_2d: int = GRID_POINTS,
+) -> discord.File:
+    buf = await _run_blocking(
+        _plot_inequality_blocking,
+        expr, x_var, y_var, x_range, y_range, op, rhs, title, style,
+        resolution_2d,
+    )
+    return discord.File(buf, filename="inequality.png")
+
+
+async def plot_histogram(
+    values: list,
+    bins: int = 20,
+    title: str = "",
+    xlabel: str = "value",
+    ylabel: str = "count",
+    style: StyleOptions = _DEFAULT_STYLE,
+) -> discord.File:
+    if not values:
+        raise ValueError("Cannot plot an empty histogram data set.")
+    bins = max(1, min(500, int(bins)))
+    buf = await _run_blocking(
+        _plot_histogram_blocking, values, bins, title, xlabel, ylabel, style,
+    )
+    return discord.File(buf, filename="histogram.png")
+
+
+async def plot_errorbar(
+    xs: list,
+    ys: list,
+    yerr: list,
+    title: str = "",
+    xlabel: str = "x",
+    ylabel: str = "y",
+    style: StyleOptions = _DEFAULT_STYLE,
+) -> discord.File:
+    if not (len(xs) == len(ys) == len(yerr)):
+        raise ValueError("xs, ys, and error values must have the same length.")
+    if not xs:
+        raise ValueError("Cannot plot an empty errorbar data set.")
+    buf = await _run_blocking(
+        _plot_errorbar_blocking, xs, ys, yerr, title, xlabel, ylabel, style,
+    )
+    return discord.File(buf, filename="errorbar.png")
+
+
+async def plot_heatmap(
+    expr: sympy.Expr,
+    x_var: sympy.Symbol,
+    y_var: sympy.Symbol,
+    x_range: Tuple[float, float] = (-5.0, 5.0),
+    y_range: Tuple[float, float] = (-5.0, 5.0),
+    title: str = "",
+    style: StyleOptions = _DEFAULT_STYLE,
+    resolution_2d: int = GRID_POINTS,
+) -> discord.File:
+    buf = await _run_blocking(
+        _plot_heatmap_blocking,
+        expr, x_var, y_var, x_range, y_range, title, style, resolution_2d,
+    )
+    return discord.File(buf, filename="heatmap.png")
+
+
+async def plot_boxplot(
+    groups: list,
+    mode: str = "box",
+    title: str = "",
+    ylabel: str = "value",
+    style: StyleOptions = _DEFAULT_STYLE,
+) -> discord.File:
+    clean_groups = [g for g in groups if len(g) > 0]
+    if not clean_groups:
+        raise ValueError("Cannot plot an empty boxplot data set.")
+    mode = "violin" if mode == "violin" else "box"
+    buf = await _run_blocking(
+        _plot_boxplot_blocking, clean_groups, mode, title, ylabel, style,
+    )
+    return discord.File(buf, filename=f"{mode}plot.png")
 
 
 async def plot_multi(
@@ -1626,8 +1897,6 @@ def _plot_animation_parametric_3d_blocking(
 
 
 async def plot_animation(cfg) -> discord.File:
-    from cogs.plot_engine import _clean_sympy_expr, _sympy_expr
-
     anim_var = sympy.Symbol(cfg.anim_param or "a")
     style = cfg.to_style()
     pt = cfg.plot_type
@@ -1714,6 +1983,12 @@ __all__ = [
     "plot_function",
     "plot_points",
     "plot_polar",
+    "plot_implicit",
+    "plot_inequality",
+    "plot_histogram",
+    "plot_errorbar",
+    "plot_heatmap",
+    "plot_boxplot",
     "plot_contour",
     "plot_vector_field",
     "plot_parametric_2d",
