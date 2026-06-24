@@ -12,6 +12,10 @@ Commands
 /correlation   data_x  data_y             Pearson correlation coefficient.
 /regression    data_x  data_y             Linear regression with scatter plot.
 /normal_pdf    mean  stdev                Normal distribution PDF plot.
+/normal_cdf    mean stdev upper [lower]   Normal distribution CDF plot.
+/inv_normal    probability mean stdev     Inverse normal.
+/binomial_cdf  n p x                      Binomial CDF plot.
+/poisson_cdf   lam x                      Poisson CDF plot.
 
 Data input
 ----------
@@ -183,6 +187,122 @@ def _normal_pdf_bytes(mean: float, stdev: float) -> io.BytesIO:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=150,
                 facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _normal_cdf_bytes(mean: float, stdev: float, lower: float, upper: float) -> io.BytesIO:
+    x = np.linspace(mean - 4 * stdev, mean + 4 * stdev, 800)
+    y = scipy_stats.norm.pdf(x, loc=mean, scale=stdev)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    ax.plot(x, y, linewidth=2, color="steelblue")
+    
+    x_fill = np.linspace(max(mean - 4 * stdev, lower), min(mean + 4 * stdev, upper), 200)
+    y_fill = scipy_stats.norm.pdf(x_fill, loc=mean, scale=stdev)
+    ax.fill_between(x_fill, y_fill, alpha=0.5, color="steelblue", label=f"P({lower} ≤ X ≤ {upper})")
+
+    ax.axvline(mean, color="dimgray", linewidth=1, linestyle="-", label=f"μ = {mean}")
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.grid(True, alpha=0.3)
+    ax.set_title(f"Normal Distribution  N(μ={mean}, σ={stdev})", fontsize=13)
+    ax.set_xlabel("x", fontsize=11)
+    ax.set_ylabel("Probability Density", fontsize=11)
+    ax.legend(fontsize=9)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+def _inv_normal_bytes(mean: float, stdev: float, prob: float, x_val: float) -> io.BytesIO:
+    x = np.linspace(mean - 4 * stdev, mean + 4 * stdev, 800)
+    y = scipy_stats.norm.pdf(x, loc=mean, scale=stdev)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    ax.plot(x, y, linewidth=2, color="steelblue")
+    
+    x_fill = np.linspace(mean - 4 * stdev, x_val, 200)
+    y_fill = scipy_stats.norm.pdf(x_fill, loc=mean, scale=stdev)
+    ax.fill_between(x_fill, y_fill, alpha=0.5, color="mediumseagreen", label=f"Area = {prob}")
+
+    ax.axvline(x_val, color="crimson", linewidth=1.5, linestyle="--", label=f"x = {x_val:.4f}")
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.grid(True, alpha=0.3)
+    ax.set_title(f"Inverse Normal  N(μ={mean}, σ={stdev})", fontsize=13)
+    ax.set_xlabel("x", fontsize=11)
+    ax.set_ylabel("Probability Density", fontsize=11)
+    ax.legend(fontsize=9)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+def _binomial_cdf_bytes(n: int, p: float, x_val: int) -> io.BytesIO:
+    x = np.arange(0, n + 1)
+    y = scipy_stats.binom.pmf(x, n, p)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    colors = ["steelblue" if val <= x_val else "lightgray" for val in x]
+    ax.bar(x, y, color=colors, edgecolor="black", alpha=0.7)
+
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_title(f"Binomial Distribution  B(n={n}, p={p})", fontsize=13)
+    ax.set_xlabel("Number of Successes (k)", fontsize=11)
+    ax.set_ylabel("Probability P(X=k)", fontsize=11)
+    
+    import matplotlib.patches as mpatches
+    shaded_patch = mpatches.Patch(color='steelblue', alpha=0.7, label=f'P(X ≤ {x_val})')
+    ax.legend(handles=[shaded_patch], fontsize=9)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+def _poisson_cdf_bytes(lam: float, x_val: int) -> io.BytesIO:
+    upper_bound = max(15, int(lam + 4 * np.sqrt(lam)))
+    x = np.arange(0, upper_bound + 1)
+    y = scipy_stats.poisson.pmf(x, lam)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    colors = ["steelblue" if val <= x_val else "lightgray" for val in x]
+    ax.bar(x, y, color=colors, edgecolor="black", alpha=0.7)
+
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_title(f"Poisson Distribution  Po(λ={lam})", fontsize=13)
+    ax.set_xlabel("Number of Events (k)", fontsize=11)
+    ax.set_ylabel("Probability P(X=k)", fontsize=11)
+    
+    import matplotlib.patches as mpatches
+    shaded_patch = mpatches.Patch(color='steelblue', alpha=0.7, label=f'P(X ≤ {x_val})')
+    ax.legend(handles=[shaded_patch], fontsize=9)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150, facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
     return buf
@@ -540,6 +660,188 @@ class StatisticsCog(commands.Cog, name="Statistics"):
 
             await interaction.followup.send(embed=embed, file=file)
         except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /normal_cdf
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="normal_cdf",
+        description="Compute the cumulative probability P(lower ≤ X ≤ upper) for a normal distribution.",
+    )
+    @app_commands.describe(
+        mean="Mean (μ) of the distribution",
+        stdev="Standard deviation (σ) — must be > 0",
+        lower="Lower bound (default: -oo)",
+        upper="Upper bound",
+    )
+    @app_commands.checks.cooldown(1, 2.0)
+    async def normal_cdf(
+        self,
+        interaction: discord.Interaction,
+        mean: float,
+        stdev: float,
+        upper: float,
+        lower: float = -np.inf,
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            if stdev <= 0:
+                raise ValueError("Standard deviation must be positive.")
+                
+            prob = scipy_stats.norm.cdf(upper, loc=mean, scale=stdev) - scipy_stats.norm.cdf(lower, loc=mean, scale=stdev)
+            lower_str = "-∞" if lower == -np.inf else str(lower)
+            
+            embed = math_embed(
+                title=f"Normal CDF  N(μ={mean}, σ={stdev})",
+                result=f"P({lower_str} ≤ X ≤ {upper}) = {prob:.6g}",
+            )
+            embed.set_image(url="attachment://normal_cdf.png")
+
+            loop = asyncio.get_running_loop()
+            buf  = await loop.run_in_executor(None, _normal_cdf_bytes, mean, stdev, lower, upper)
+            file = discord.File(buf, filename="normal_cdf.png")
+
+            await interaction.followup.send(embed=embed, file=file)
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /inv_normal
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="inv_normal",
+        description="Inverse normal: find x given P(X ≤ x) = probability.",
+    )
+    @app_commands.describe(
+        probability="Cumulative probability P(X ≤ x) between 0 and 1",
+        mean="Mean (μ) of the distribution",
+        stdev="Standard deviation (σ) — must be > 0",
+    )
+    @app_commands.checks.cooldown(1, 2.0)
+    async def inv_normal(
+        self,
+        interaction: discord.Interaction,
+        probability: float,
+        mean: float,
+        stdev: float,
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            if stdev <= 0:
+                raise ValueError("Standard deviation must be positive.")
+            if not 0 < probability < 1:
+                raise ValueError("Probability must be strictly between 0 and 1.")
+                
+            x_val = scipy_stats.norm.ppf(probability, loc=mean, scale=stdev)
+            
+            embed = math_embed(
+                title=f"Inverse Normal  N(μ={mean}, σ={stdev})",
+                result=f"x = {x_val:.6g}",
+                footer=f"P(X ≤ {x_val:.6g}) = {probability}",
+            )
+            embed.set_image(url="attachment://inv_normal.png")
+
+            loop = asyncio.get_running_loop()
+            buf  = await loop.run_in_executor(None, _inv_normal_bytes, mean, stdev, probability, x_val)
+            file = discord.File(buf, filename="inv_normal.png")
+
+            await interaction.followup.send(embed=embed, file=file)
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /binomial_cdf
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="binomial_cdf",
+        description="Compute P(X ≤ x) for a Binomial distribution.",
+    )
+    @app_commands.describe(
+        n="Number of trials",
+        p="Probability of success on each trial (0 to 1)",
+        x="Number of successes to compute cumulative probability for",
+    )
+    @app_commands.checks.cooldown(1, 2.0)
+    async def binomial_cdf(
+        self,
+        interaction: discord.Interaction,
+        n: int,
+        p: float,
+        x: int,
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            if n <= 0:
+                raise ValueError("Number of trials (n) must be positive.")
+            if not 0 <= p <= 1:
+                raise ValueError("Probability (p) must be between 0 and 1.")
+            if x < 0 or x > n:
+                raise ValueError(f"Successes (x) must be between 0 and {n}.")
+                
+            prob = scipy_stats.binom.cdf(x, n, p)
+            pmf_val = scipy_stats.binom.pmf(x, n, p)
+            
+            embed = math_embed(
+                title=f"Binomial CDF  B(n={n}, p={p})",
+                result=f"P(X ≤ {x}) = {prob:.6g}",
+                footer=f"P(X = {x}) = {pmf_val:.6g}",
+            )
+            embed.set_image(url="attachment://binomial_cdf.png")
+
+            loop = asyncio.get_running_loop()
+            buf  = await loop.run_in_executor(None, _binomial_cdf_bytes, n, p, x)
+            file = discord.File(buf, filename="binomial_cdf.png")
+
+            await interaction.followup.send(embed=embed, file=file)
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /poisson_cdf
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="poisson_cdf",
+        description="Compute P(X ≤ x) for a Poisson distribution.",
+    )
+    @app_commands.describe(
+        lam="Average rate of success (λ) — must be > 0",
+        x="Number of occurrences to compute cumulative probability for",
+    )
+    @app_commands.checks.cooldown(1, 2.0)
+    async def poisson_cdf(
+        self,
+        interaction: discord.Interaction,
+        lam: float,
+        x: int,
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            if lam <= 0:
+                raise ValueError("Average rate (λ) must be positive.")
+            if x < 0:
+                raise ValueError("Occurrences (x) cannot be negative.")
+                
+            prob = scipy_stats.poisson.cdf(x, lam)
+            pmf_val = scipy_stats.poisson.pmf(x, lam)
+            
+            embed = math_embed(
+                title=f"Poisson CDF  Po(λ={lam})",
+                result=f"P(X ≤ {x}) = {prob:.6g}",
+                footer=f"P(X = {x}) = {pmf_val:.6g}",
+            )
+            embed.set_image(url="attachment://poisson_cdf.png")
+
+            loop = asyncio.get_running_loop()
+            buf  = await loop.run_in_executor(None, _poisson_cdf_bytes, lam, x)
+            file = discord.File(buf, filename="poisson_cdf.png")
+
+            await interaction.followup.send(embed=embed, file=file)
+        except Exception as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
 
 

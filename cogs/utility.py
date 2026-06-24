@@ -8,6 +8,7 @@ Commands
 /constants        Reference embed of common mathematical constants.
 /help_math        Paginated list of every bot command, grouped by category.
 /convert          Convert between units of length, mass, or temperature.
+/units            Convert any expression with units (compound / derived).
 /about            Bot version, library versions, guild count, and uptime.
 
 History is stored in-memory (see :mod:`data.history`) — nothing is written
@@ -32,6 +33,7 @@ from sympy.physics.units import (
     pound,
 )
 import sympy
+import sympy.physics.units as spu
 from discord import app_commands
 from discord.ext import commands
 import discord
@@ -121,6 +123,78 @@ _SUPPORTED_UNITS_STR = (
     "mass: kg, g, lb, oz  |  "
     "temperature: C, F, K"
 )
+
+# ---------------------------------------------------------------------------
+# Unit alias table (for /units)
+# ---------------------------------------------------------------------------
+
+# Maps lowercase user-supplied unit names to sympy.physics.units objects.
+# Covers the most commonly needed SI, imperial, and derived units.
+_UNIT_ALIASES: dict[str, sympy.Basic] = {
+    # Length
+    "m": spu.meter, "meter": spu.meter, "meters": spu.meter,
+    "km": spu.kilometer, "kilometer": spu.kilometer, "kilometers": spu.kilometer,
+    "cm": spu.centimeter, "centimeter": spu.centimeter,
+    "mm": spu.millimeter, "millimeter": spu.millimeter,
+    "ft": spu.foot, "foot": spu.foot, "feet": spu.foot,
+    "inch": spu.inch, "in": spu.inch, "inches": spu.inch,
+    "mile": spu.mile, "miles": spu.mile,
+    "yd": spu.yard, "yard": spu.yard, "yards": spu.yard,
+    # Mass
+    "kg": spu.kilogram, "kilogram": spu.kilogram, "kilograms": spu.kilogram,
+    "g": spu.gram, "gram": spu.gram, "grams": spu.gram,
+    "mg": spu.milligram, "milligram": spu.milligram,
+    "lb": spu.pound, "pound": spu.pound, "pounds": spu.pound,
+    "oz": _ounce, "ounce": _ounce, "ounces": _ounce,
+    # Time
+    "s": spu.second, "sec": spu.second, "second": spu.second, "seconds": spu.second,
+    "min": spu.minute, "minute": spu.minute, "minutes": spu.minute,
+    "hr": spu.hour, "hour": spu.hour, "hours": spu.hour,
+    # Area
+    "m2": spu.meter**2, "km2": spu.kilometer**2, "cm2": spu.centimeter**2,
+    # Volume
+    "l": spu.liter, "liter": spu.liter, "litre": spu.liter,
+    "ml": spu.milliliter, "milliliter": spu.milliliter,
+    # Speed
+    "mps": spu.meter / spu.second,
+    "kph": spu.kilometer / spu.hour,
+    "mph": spu.mile / spu.hour,
+    # Force / Energy / Power / Pressure
+    "n": spu.newton, "newton": spu.newton,
+    "j": spu.joule, "joule": spu.joule,
+    "kj": spu.kilo * spu.joule,
+    "w": spu.watt, "watt": spu.watt,
+    "kw": spu.kilo * spu.watt,
+    "pa": spu.pascal, "pascal": spu.pascal,
+    # Electricity
+    "v": spu.volt, "volt": spu.volt,
+    "a": spu.ampere, "ampere": spu.ampere,
+    "ohm": spu.ohm,
+    "f": spu.farad, "farad": spu.farad,
+    "hz": spu.hertz, "hertz": spu.hertz,
+}
+
+
+def _resolve_unit(name: str) -> sympy.Basic:
+    """
+    Return the ``sympy.physics.units`` object for *name*.
+
+    Raises
+    ------
+    ValueError
+        If the name is not recognised.
+    """
+    key = name.strip().lower()
+    if key in _UNIT_ALIASES:
+        return _UNIT_ALIASES[key]
+    # Try looking it up directly in sympy.physics.units as a last resort
+    obj = getattr(spu, key, None)
+    if obj is not None and isinstance(obj, sympy.Basic):
+        return obj
+    raise ValueError(
+        f"Unit `{name}` is not recognised.  "
+        "Try a common name like `m`, `kg`, `newton`, `joule`, `mps`, `kph`, etc."
+    )
 
 # 0°C = 273.15 K, kept as an exact rational throughout.
 _FREEZING_K = Rational(27315, 100)
@@ -478,6 +552,130 @@ class UtilityCog(commands.Cog, name="Utility"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /units
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="units",
+        description="Convert any expression with units, including compound and derived units.",
+    )
+    @app_commands.describe(
+        value='Numeric value to convert, e.g. "9.8" or "1/3"',
+        from_unit='Source unit expression, e.g. "m/s^2", "km/h", "kg*m^2"',
+        to_unit='Target unit expression, e.g. "ft/s^2", "mph", "joule"',
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def units(
+        self,
+        interaction: discord.Interaction,
+        value: str,
+        from_unit: str,
+        to_unit: str,
+    ) -> None:
+        """
+        Convert *value from_unit* to *to_unit* using ``sympy.physics.units``.
+
+        Handles compound and derived units (e.g. ``m/s^2``, ``kg*m/s^2``,
+        ``kWh``).  The existing ``/convert`` command is faster and simpler for
+        everyday single-unit conversions.
+        """
+        await interaction.response.defer()
+
+        try:
+            # ---- Parse the numeric value --------------------------------
+            try:
+                val = sympy.Rational(str(value).strip())
+            except Exception:
+                raise ValueError(
+                    f"`{value}` is not a valid number. "
+                    "Use a decimal (e.g. `9.8`) or fraction (e.g. `1/3`)."
+                )
+
+            # ---- Parse unit expressions ---------------------------------
+            # We build a SymPy expression from tokens split on * / ^
+            # Each alphabetic token is resolved through _resolve_unit().
+            def _parse_unit_expr(raw: str) -> sympy.Basic:
+                import re as _re
+                raw = raw.strip()
+                # Replace ^ with ** for Python eval-style parsing
+                raw = raw.replace("^", "**")
+                # Tokenise: split on * and / while keeping the delimiters
+                tokens = _re.split(r"([*/])", raw)
+                result: sympy.Basic | None = None
+                op = "*"
+                for tok in tokens:
+                    tok = tok.strip()
+                    if tok in ("*", "/"):
+                        op = tok
+                        continue
+                    if not tok:
+                        continue
+                    # Check for exponentiation: name**n
+                    exp_match = _re.match(r"^([A-Za-z]\w*)(\*\*[\-\d]+)$", tok)
+                    if exp_match:
+                        base_name = exp_match.group(1)
+                        exponent  = int(exp_match.group(2).replace("**", ""))
+                        unit_obj  = _resolve_unit(base_name) ** exponent
+                    elif tok.lstrip("-").isdigit():
+                        unit_obj = sympy.Integer(int(tok))
+                    else:
+                        unit_obj = _resolve_unit(tok)
+
+                    if result is None:
+                        result = unit_obj
+                    elif op == "*":
+                        result = result * unit_obj
+                    else:
+                        result = result / unit_obj
+                if result is None:
+                    raise ValueError(f"Could not parse unit expression `{raw}`.")
+                return result
+
+            src_unit = _parse_unit_expr(from_unit)
+            tgt_unit = _parse_unit_expr(to_unit)
+
+            # ---- Perform conversion -------------------------------------
+            source_quantity = val * src_unit
+            converted = spu.convert_to(source_quantity, tgt_unit)
+
+            # Strip the target unit to get a dimensionless numeric result.
+            # nsimplify with rational=True preserves exact fractions.
+            numeric = sympy.nsimplify(converted / tgt_unit, rational=True)
+            numeric_simplified = sympy.simplify(numeric)
+
+            exact_str   = str(numeric_simplified)
+            decimal_str = str(sympy.N(numeric_simplified, 8))
+
+            result_display = (
+                f"{exact_str}  ≈  {decimal_str}  {to_unit}"
+                if exact_str != decimal_str
+                else f"{exact_str}  {to_unit}"
+            )
+
+            steps = [
+                ("Input",       f"{value}  {from_unit}"),
+                ("Target unit", to_unit),
+                ("Converted",   result_display),
+            ]
+            embed = math_embed(
+                title=f"Unit Conversion  {from_unit} → {to_unit}",
+                result=result_display,
+                steps=steps,
+                footer="Powered by sympy.physics.units  |  Use /convert for simple everyday conversions",
+            )
+            await interaction.followup.send(embed=embed)
+
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(
+                    f"Conversion failed: {exc}\n"
+                    "Make sure the units are compatible (e.g. you can't convert meters to kilograms)."
+                )
+            )
 
     # -----------------------------------------------------------------------
     # /about

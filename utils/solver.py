@@ -385,6 +385,217 @@ def factor_steps(expr: sympy.Expr) -> StepList:
         return _err(f"Could not factor expression: {exc}")
 
 # ---------------------------------------------------------------------------
+# Cubic and quartic step-builders
+# ---------------------------------------------------------------------------
+
+def solve_cubic_steps(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+) -> StepList:
+    """
+    Return step-by-step working for solving a cubic equation in *var*.
+
+    The walk-through follows Cardano's method:
+
+    1. Original expression.
+    2. Expand to standard form  ``ax³ + bx² + cx + d = 0``.
+    3. Identify coefficients a, b, c, d.
+    4. Depress the cubic via the substitution  ``x = t − b/(3a)``
+       to obtain ``t³ + pt + q = 0``.
+    5. Compute the Cardano discriminant  ``Δ = −4p³ − 27q²``.
+    6. Apply Cardano's formula (via SymPy) to find the three roots.
+
+    Parameters
+    ----------
+    expr:
+        A SymPy expression representing the LHS of the equation (= 0).
+    var:
+        The symbol to solve for.
+
+    Returns
+    -------
+    StepList
+    """
+    try:
+        steps: StepList = []
+
+        # Step 1 — original
+        steps.append(("Original expression", _expr_str(expr)))
+
+        # Step 2 — expand to standard form
+        expanded = sympy.expand(expr)
+        steps.append(("Expand to standard form  ax³ + bx² + cx + d = 0", _expr_str(expanded)))
+
+        # Step 3 — extract coefficients
+        poly = sympy.Poly(expanded, var)
+        if poly.degree() != 3:
+            return _err(
+                f"Expression has degree {poly.degree()}; "
+                "solve_cubic_steps requires a degree-3 polynomial."
+            )
+        # Poly.all_coeffs() returns [a, b, c, d] for ax³ + bx² + cx + d
+        coeffs = poly.all_coeffs()
+        while len(coeffs) < 4:
+            coeffs.insert(0, sympy.Integer(0))
+        a, b, c, d = coeffs
+        steps.append((
+            "Identify coefficients  a, b, c, d",
+            f"a = {_expr_str(a)},  b = {_expr_str(b)},  c = {_expr_str(c)},  d = {_expr_str(d)}",
+        ))
+
+        # Step 4 — depressed cubic substitution  x = t − b/(3a)
+        shift = sympy.Rational(1, 3) * b / a
+        t = sympy.Symbol("t")
+        depressed_raw = sympy.expand(expr.subs(var, t - shift))
+        depressed_poly = sympy.Poly(depressed_raw, t)
+        dep_coeffs = depressed_poly.all_coeffs()
+        while len(dep_coeffs) < 4:
+            dep_coeffs.insert(0, sympy.Integer(0))
+        _, _, p, q = dep_coeffs
+        p = sympy.simplify(p)
+        q = sympy.simplify(q)
+        steps.append((
+            f"Depress cubic via  {var} = t − b/(3a)",
+            f"t³ + pt + q = 0   where  p = {_expr_str(p)},  q = {_expr_str(q)}",
+        ))
+
+        # Step 5 — Cardano discriminant  Δ = −4p³ − 27q²
+        delta = sympy.expand(-4 * p**3 - 27 * q**2)
+        delta_simplified = sympy.simplify(delta)
+        disc_note = (
+            " (Δ > 0: 3 real roots)"  if delta_simplified.is_positive else
+            " (Δ = 0: repeated root)" if delta_simplified == 0 else
+            " (Δ < 0: 1 real root)"
+        )
+        steps.append((
+            "Cardano discriminant  Δ = −4p³ − 27q²",
+            f"Δ = {_expr_str(delta_simplified)}{disc_note}",
+        ))
+
+        # Step 6 — roots via SymPy
+        solutions = sympy.solve(expanded, var)
+        if not solutions:
+            sol_str = "No closed-form roots found"
+        else:
+            sol_str = "\n".join(f"{var} = {_expr_str(s)}" for s in solutions)
+        steps.append(("Apply Cardano's formula — roots", sol_str))
+
+        return steps
+
+    except sympy.PolynomialError as exc:
+        return _err(f"Expression is not a polynomial in {var}: {exc}")
+    except Exception as exc:
+        return _err(f"Could not solve cubic: {exc}")
+
+
+def solve_quartic_steps(
+    expr: sympy.Expr,
+    var: sympy.Symbol,
+) -> StepList:
+    """
+    Return step-by-step working for solving a quartic equation in *var*.
+
+    The walk-through follows the resolvent-cubic approach:
+
+    1. Original expression.
+    2. Expand to standard form  ``ax⁴ + bx³ + cx² + dx + e = 0``.
+    3. Identify coefficients a, b, c, d, e.
+    4. Depress the quartic via  ``x = t − b/(4a)`` to obtain
+       ``t⁴ + pt² + qt + r = 0``.
+    5. Form the resolvent cubic  ``y³ − (p/2)y² − ry + (4pr − q²)/8 = 0``
+       and compute its discriminant.
+    6. Apply Ferrari's / SymPy's method to find the four roots.
+
+    Parameters
+    ----------
+    expr:
+        A SymPy expression representing the LHS of the equation (= 0).
+    var:
+        The symbol to solve for.
+
+    Returns
+    -------
+    StepList
+    """
+    try:
+        steps: StepList = []
+
+        # Step 1 — original
+        steps.append(("Original expression", _expr_str(expr)))
+
+        # Step 2 — expand
+        expanded = sympy.expand(expr)
+        steps.append(("Expand to standard form  ax⁴ + bx³ + cx² + dx + e = 0", _expr_str(expanded)))
+
+        # Step 3 — coefficients
+        poly = sympy.Poly(expanded, var)
+        if poly.degree() != 4:
+            return _err(
+                f"Expression has degree {poly.degree()}; "
+                "solve_quartic_steps requires a degree-4 polynomial."
+            )
+        coeffs = poly.all_coeffs()
+        while len(coeffs) < 5:
+            coeffs.insert(0, sympy.Integer(0))
+        a, b, c, d, e = coeffs
+        steps.append((
+            "Identify coefficients  a, b, c, d, e",
+            (
+                f"a = {_expr_str(a)},  b = {_expr_str(b)},  c = {_expr_str(c)}\n"
+                f"d = {_expr_str(d)},  e = {_expr_str(e)}"
+            ),
+        ))
+
+        # Step 4 — depress (remove cubic term) via  x = t − b/(4a)
+        shift = sympy.Rational(1, 4) * b / a
+        t = sympy.Symbol("t")
+        depressed_raw = sympy.expand(expr.subs(var, t - shift))
+        dep_poly = sympy.Poly(depressed_raw, t)
+        dep_coeffs = dep_poly.all_coeffs()
+        while len(dep_coeffs) < 5:
+            dep_coeffs.insert(0, sympy.Integer(0))
+        _, _, p_raw, q_raw, r_raw = dep_coeffs
+        p = sympy.simplify(p_raw / a)
+        q = sympy.simplify(q_raw / a)
+        r = sympy.simplify(r_raw / a)
+        steps.append((
+            f"Depress quartic via  {var} = t − b/(4a)  →  t⁴ + pt² + qt + r = 0",
+            f"p = {_expr_str(p)}\nq = {_expr_str(q)}\nr = {_expr_str(r)}",
+        ))
+
+        # Step 5 — resolvent cubic  m³ − (p/2)m² − rm + (4pr − q²)/8 = 0
+        res_coeff_b = sympy.Rational(-1, 2) * p
+        res_coeff_c = -r
+        res_coeff_d = sympy.Rational(1, 8) * (4 * p * r - q**2)
+        res_b_s = sympy.simplify(res_coeff_b)
+        res_c_s = sympy.simplify(res_coeff_c)
+        res_d_s = sympy.simplify(res_coeff_d)
+        steps.append((
+            "Resolvent cubic  m³ + αm² + βm + γ = 0",
+            (
+                f"α = {_expr_str(res_b_s)}\n"
+                f"β = {_expr_str(res_c_s)}\n"
+                f"γ = {_expr_str(res_d_s)}"
+            ),
+        ))
+
+        # Step 6 — roots via SymPy (Ferrari / algebraic)
+        solutions = sympy.solve(expanded, var)
+        if not solutions:
+            sol_str = "No closed-form roots found"
+        else:
+            sol_str = "\n".join(f"{var} = {_expr_str(s)}" for s in solutions)
+        steps.append(("Apply Ferrari's method — roots", sol_str))
+
+        return steps
+
+    except sympy.PolynomialError as exc:
+        return _err(f"Expression is not a polynomial in {var}: {exc}")
+    except Exception as exc:
+        return _err(f"Could not solve quartic: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Internal utilities
 # ---------------------------------------------------------------------------
 

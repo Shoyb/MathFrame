@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.parser    import parse_expression
+from utils.parser    import parse_expression, _validate_raw  # noqa: PLC2701
 from utils.formatter import math_embed, error_embed
 from utils.renderer  import expr_to_image, result_to_image
 
@@ -79,6 +79,8 @@ def _parse_substitutions(raw: str) -> dict[sympy.Symbol, sympy.Basic]:
                 f"`{lhs}` is not a valid variable name (substitution #{i})."
             )
 
+        # Apply forbidden-keyword and length guard before sympify.
+        _validate_raw(rhs)
         try:
             value = sympy.sympify(rhs)
         except sympy.SympifyError as exc:
@@ -169,6 +171,18 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
     # -----------------------------------------------------------------------
     # /subs
@@ -221,6 +235,18 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
     # -----------------------------------------------------------------------
     # /partial_fraction
@@ -271,6 +297,18 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
     # -----------------------------------------------------------------------
     # /roots
@@ -347,6 +385,18 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
 
 # ---------------------------------------------------------------------------

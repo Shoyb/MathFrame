@@ -1,678 +1,492 @@
-# Math Discord Bot — Python Coding Plan
+# MathFrame — Improvement Plan
 
-A complete, ordered coding plan for building a math-heavy Discord bot in Python.
-Follow phases top to bottom. Each phase builds on the one before it.
-
----
-
-## Tech Stack
-
-| Layer | Library | Purpose |
-|---|---|---|
-| Discord | `discord.py` (nextcord) | Bot framework, slash commands |
-| CAS | `sympy` | Symbolic math engine |
-| LaTeX parsing | `latex2sympy2` | LaTeX → SymPy conversion |
-| Numerics | `numpy`, `scipy` | Numerical computation |
-| Plotting | `matplotlib` | Graph/plot image generation |
-| Database | `aiosqlite` | Async SQLite for user history |
-| Caching | `cachetools` | In-memory TTL cache |
-| Timeout | `concurrent.futures` | Guard against infinite computations |
-| Config | `python-dotenv` | Load `.env` secrets |
-
-Install everything:
-```
-pip install "discord.py[voice]" sympy latex2sympy2 numpy scipy matplotlib aiosqlite cachetools python-dotenv
-```
+This document outlines all planned improvements to the MathFrame Discord bot,
+organized by category. Each item includes a description of the problem, the
+proposed fix, and implementation notes.
 
 ---
 
-## Folder Structure
+## Security
 
-```
-math_bot/
-├── main.py                  # Bot entry point
-├── config.py                # Tokens, constants, settings
-├── .env                     # DISCORD_TOKEN (never commit this)
-│
-├── cogs/                    # One file per math domain (loaded as Discord cogs)
-│   ├── __init__.py
-│   ├── arithmetic.py        # Phase 3
-│   ├── calculus.py          # Phase 4
-│   ├── linear_algebra.py    # Phase 4
-│   ├── statistics.py        # Phase 4
-│   ├── number_theory.py     # Phase 5
-│   ├── geometry.py          # Phase 5
-│   ├── discrete.py          # Phase 5
-│   └── symbolic.py          # Phase 5
-│
-├── utils/                   # Shared utilities used by all cogs
-│   ├── __init__.py
-│   ├── parser.py            # Phase 2 — expression parser
-│   ├── renderer.py          # Phase 2 — LaTeX → PNG image
-│   ├── plotter.py           # Phase 2 — matplotlib graph generation
-│   ├── solver.py            # Phase 2 — step-by-step solver engine
-│   ├── formatter.py         # Phase 2 — Discord embed builder
-│   └── paginator.py         # Phase 2 — paginated embed views
-│
-└── data/
-    ├── __init__.py
-    ├── db.py                # Phase 2 — SQLite async wrapper
-    └── cache.py             # Phase 2 — TTL result cache
-```
+### 1. Route plotting expressions through `parser.py` validation
+
+**Problem:**
+`utils/expr_utils.py::_sympy_expr()` calls `sympy.sympify()` directly with no
+length check and no `FORBIDDEN_KEYWORDS` filter. This function is the parser for
+every expression field in the `/plot` builder — main expression, vector field
+components, parametric `x(t)/y(t)/z(t)`, polar, and animation parameter
+expressions. The project's own `math_bot_coding_plan.md` explicitly flags
+unsanitized `eval()` as a security hole.
+
+**Fix:**
+Before calling `sympify()` in `_sympy_expr()`, reuse `_validate_raw()` from
+`parser.py` to enforce the length cap (`MAX_EXPR_LENGTH`) and check for
+`FORBIDDEN_KEYWORDS`. Alternatively, refactor `_sympy_expr()` to delegate
+fully to `parse_expression()` where async context allows, or extract
+`_validate_raw()` into a shared `utils/validation.py` module so both parsers
+import from the same source.
+
+**Files affected:** `utils/expr_utils.py`, optionally `utils/parser.py`
 
 ---
 
-## Phase 1 — Project Bootstrap
+### 2. Fix the two remaining direct `sympify()` call sites
 
-**Goal:** Bot connects to Discord, responds to a ping, loads cogs.
+**Problem:**
+Two additional locations bypass `parser.py`'s sanitizer:
+- `cogs/calculus.py::_parse_point()` — used for limit/series evaluation points
+- `cogs/symbolic.py::_parse_substitutions()` — used for the `/subs` command's
+  right-hand values
 
-### `config.py`
-```python
-import os
-from dotenv import load_dotenv
+Both call `sympy.sympify()` directly on user input, with no forbidden-keyword
+check.
 
-load_dotenv()
+**Fix:**
+In `_parse_point()`, add a `_validate_raw()` call before `sympify()` — input
+is a single value string so the full `parse_expression()` async path isn't
+needed, but keyword filtering must still apply. In `_parse_substitutions()`,
+apply the same inline validation before each `sympify()` call on the
+right-hand side of each substitution pair.
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-PREFIX = "!"
-MAX_EXPR_LENGTH = 500        # reject absurdly long inputs
-COMPUTE_TIMEOUT = 3          # seconds before killing a computation
-CACHE_TTL = 300              # seconds to keep cached results
-CACHE_MAXSIZE = 256
-```
-
-### `main.py`
-```python
-import discord
-from discord.ext import commands
-import config, os
-
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix=config.PREFIX, intents=intents)
-
-COGS = [
-    "cogs.arithmetic", "cogs.calculus", "cogs.linear_algebra",
-    "cogs.statistics", "cogs.number_theory", "cogs.geometry",
-    "cogs.discrete", "cogs.symbolic",
-]
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    for cog in COGS:
-        await bot.load_extension(cog)
-    await bot.tree.sync()   # sync slash commands globally
-
-bot.run(config.DISCORD_TOKEN)
-```
-
-**Deliverable:** Bot goes online, `/ping` returns "Pong!".
+**Files affected:** `cogs/calculus.py`, `cogs/symbolic.py`
 
 ---
 
-## Phase 2 — Shared Utilities
+## Error Handling
 
-**Goal:** Build the infrastructure all cogs share. Do this before any math commands.
+### 6. Broaden exception handling in arithmetic, calculus, and symbolic cogs
 
-### `utils/parser.py` — Expression Parser
+**Problem:**
+`arithmetic.py`, parts of `calculus.py`, and `symbolic.py` only catch
+`ValueError` around SymPy calls. SymPy can also raise `PolynomialError`,
+`NotImplementedError` (on some integrals and series), `CoercionFailed`, and
+others. These fall through to `main.py`'s generic global handler, which
+responds with a vague "something went wrong" message instead of a specific,
+actionable one.
 
-```python
-import re, sympy
-from sympy.parsing.sympy_parser import (
-    parse_expr, standard_transformations,
-    implicit_multiplication_application
-)
-from latex2sympy2 import latex2sympy
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-import config
+**Fix:**
+Extend the `except` clauses in each affected command to also catch
+`sympy.PolynomialError`, `NotImplementedError`, and `Exception` as a final
+fallback, each with a tailored message. For example:
+- `NotImplementedError` → `"SymPy couldn't find a closed form for this."`
+- `PolynomialError` → `"Expression couldn't be treated as a polynomial."`
 
-FORBIDDEN_KEYWORDS = ["__", "import", "exec", "eval", "open", "os", "sys", "subprocess"]
-TRANSFORMATIONS = standard_transformations + (implicit_multiplication_application,)
-_executor = ThreadPoolExecutor(max_workers=4)
-
-def _validate_raw(expr: str) -> None:
-    """Raise ValueError if expression looks dangerous."""
-    if len(expr) > config.MAX_EXPR_LENGTH:
-        raise ValueError(f"Expression too long (max {config.MAX_EXPR_LENGTH} chars).")
-    for kw in FORBIDDEN_KEYWORDS:
-        if kw in expr:
-            raise ValueError(f"Expression contains forbidden keyword: `{kw}`")
-
-def _detect_format(expr: str) -> str:
-    """Return 'latex', 'python', 'natural', or 'plain'."""
-    if expr.startswith("\\") or any(k in expr for k in ["\\frac", "\\int", "\\sum", "\\sqrt"]):
-        return "latex"
-    if "**" in expr or "math." in expr:
-        return "python"
-    if re.search(r"\b(squared|cubed|plus|minus|times|divided by|sqrt of)\b", expr, re.I):
-        return "natural"
-    return "plain"
-
-def _normalize_plain(expr: str) -> sympy.Expr:
-    expr = re.sub(r'\^', '**', expr)
-    expr = re.sub(r'(\d)([a-zA-Z])', r'\1*\2', expr)  # 2x → 2*x
-    return parse_expr(expr, transformations=TRANSFORMATIONS)
-
-def _normalize_natural(expr: str) -> sympy.Expr:
-    subs = {
-        r'\bsquared\b': '**2', r'\bcubed\b': '**3',
-        r'\bplus\b': '+',      r'\bminus\b': '-',
-        r'\btimes\b': '*',     r'\bdivided by\b': '/',
-        r'\bsquare root of\b': 'sqrt',
-    }
-    for pat, rep in subs.items():
-        expr = re.sub(pat, rep, expr, flags=re.I)
-    return _normalize_plain(expr)
-
-def _parse_blocking(raw: str) -> sympy.Expr:
-    """Blocking parse — run inside executor to apply timeout."""
-    fmt = _detect_format(raw)
-    if fmt == "latex":   return latex2sympy(raw)
-    if fmt == "python":  return parse_expr(raw)
-    if fmt == "natural": return _normalize_natural(raw)
-    return _normalize_plain(raw)
-
-async def parse_expression(raw: str) -> sympy.Expr:
-    """
-    Main entry point. Async-safe, timeout-guarded.
-    Raises ValueError with a user-friendly message on failure.
-    """
-    _validate_raw(raw)
-    import asyncio
-    loop = asyncio.get_event_loop()
-    try:
-        expr = await asyncio.wait_for(
-            loop.run_in_executor(_executor, _parse_blocking, raw),
-            timeout=config.COMPUTE_TIMEOUT
-        )
-        return expr
-    except asyncio.TimeoutError:
-        raise ValueError("Computation timed out. Try a simpler expression.")
-    except Exception as e:
-        raise ValueError(f"Couldn't parse expression: `{e}`")
-```
-
-**Key point:** `parse_expression()` is the only function cogs should ever call.
-Cogs receive a `sympy.Expr` — they never call `parse_expr` themselves.
+**Files affected:** `cogs/arithmetic.py`, `cogs/calculus.py`, `cogs/symbolic.py`
 
 ---
 
-### `utils/renderer.py` — LaTeX → PNG
 
-```python
-import matplotlib
-matplotlib.use("Agg")            # headless, no display
-import matplotlib.pyplot as plt
-import io, discord
 
-async def expr_to_image(latex_str: str) -> discord.File:
-    """Render a LaTeX string to a Discord-uploadable PNG."""
-    fig, ax = plt.subplots(figsize=(6, 1.2))
-    ax.axis("off")
-    ax.text(0.5, 0.5, f"${latex_str}$",
-            fontsize=22, ha="center", va="center",
-            transform=ax.transAxes)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight",
-                dpi=150, transparent=True)
-    plt.close(fig)
-    buf.seek(0)
-    return discord.File(buf, filename="formula.png")
-```
+## Code Quality
 
----
+### 10. Extract statistics cog's inline matplotlib code into `plotter.py`
 
-### `utils/plotter.py` — Graph Generation
+**Problem:**
+`cogs/statistics.py` contains its own mini plotting path —
+`_regression_plot_bytes()` and `_normal_pdf_bytes()` — that builds matplotlib
+figures directly inside the cog file, completely independent of the main
+plotting engine in `utils/plotter.py`. This creates two parallel, inconsistent
+code paths for producing plot images (different DPI, different styling, no
+`StyleOptions` support).
 
-```python
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import sympy, io, discord
+**Fix:**
+Move `_regression_plot_bytes()` and `_normal_pdf_bytes()` into `utils/plotter.py`
+as `plot_regression()` and `plot_normal_pdf()`, following the same
+blocking/async split pattern used by every other plot function in that module
+(`_plot_<kind>_blocking` + async wrapper). Update `cogs/statistics.py` to call
+the new functions from `plotter.py`.
 
-async def plot_function(
-    expr: sympy.Expr,
-    var: sympy.Symbol,
-    x_min: float = -10,
-    x_max: float = 10,
-    title: str = "",
-) -> discord.File:
-    f = sympy.lambdify(var, expr, modules=["numpy"])
-    xs = np.linspace(x_min, x_max, 800)
-    ys = f(xs)
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(xs, ys, linewidth=2)
-    ax.axhline(0, color="gray", linewidth=0.5)
-    ax.axvline(0, color="gray", linewidth=0.5)
-    ax.set_title(title or str(expr))
-    ax.set_xlabel(str(var))
-    ax.grid(True, alpha=0.3)
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return discord.File(buf, filename="plot.png")
-```
+**Files affected:** `utils/plotter.py`, `cogs/statistics.py`
 
 ---
 
-### `utils/solver.py` — Step-by-Step Engine
+## Features — New Commands
 
-```python
-import sympy
-from typing import List, Tuple
+### 12. Per-server command permissions
 
-StepList = List[Tuple[str, str]]   # (description, expression string)
+**Problem:**
+There are no admin controls to restrict which commands are available in which
+channels or servers. Any user in any channel can run any command, including
+computationally expensive ones.
 
-def solve_quadratic_steps(expr: sympy.Expr, var: sympy.Symbol) -> StepList:
-    """Return human-readable steps for solving a quadratic = 0."""
-    steps: StepList = []
-    steps.append(("Original expression", str(expr)))
+**Fix:**
+Add a simple guild-level permissions system:
+- Store an allow/deny list per guild and per channel using a JSON file or
+  SQLite (one table: `guild_id`, `channel_id`, `command_name`, `enabled`).
+- Add an `/admin` cog (`cogs/admin.py`) with commands `/admin enable`,
+  `/admin disable`, and `/admin status`, restricted to users with the
+  `Manage Guild` Discord permission.
+- Check the allow/deny list in a `before_invoke` hook registered in `main.py`
+  so the logic applies globally without modifying each cog.
 
-    expanded = sympy.expand(expr)
-    steps.append(("Expand", str(expanded)))
-
-    coeffs = sympy.Poly(expanded, var).all_coeffs()
-    steps.append(("Coefficients", f"a={coeffs[0]}, b={coeffs[1]}, c={coeffs[2]}"))
-
-    discriminant = coeffs[1]**2 - 4*coeffs[0]*coeffs[2]
-    steps.append(("Discriminant b²−4ac", str(sympy.simplify(discriminant))))
-
-    solutions = sympy.solve(expr, var)
-    steps.append(("Solutions", ", ".join(str(s) for s in solutions)))
-
-    return steps
-
-def differentiate_steps(expr: sympy.Expr, var: sympy.Symbol) -> StepList:
-    steps: StepList = []
-    steps.append(("Original", str(expr)))
-    derivative = sympy.diff(expr, var)
-    steps.append(("Apply d/dx", str(derivative)))
-    simplified = sympy.simplify(derivative)
-    if simplified != derivative:
-        steps.append(("Simplified", str(simplified)))
-    return steps
-```
+**Files affected:** `main.py`, new `cogs/admin.py`, new `data/permissions.py`
 
 ---
 
-### `utils/formatter.py` — Embed Builder
+### 14. LaTeX rendering fallback
 
-```python
-import discord
-from typing import Optional
+**Problem:**
+If `latex2sympy2` fails to parse a LaTeX-format input (which can happen after
+library updates or with edge-case LaTeX syntax), `parser.py` raises a
+`ValueError` with no fallback. The user gets an error with no alternative path.
 
-COLOUR = discord.Colour.blurple()
+**Fix:**
+In `parser.py`'s LaTeX branch inside `_parse_blocking()`, wrap the
+`latex2sympy2.latex2sympy()` call in a `try/except`. On failure, attempt a
+second parse using SymPy's own `parse_expr()` with
+`standard_transformations + implicit_multiplication_application` as a fallback,
+logging the original `latex2sympy2` error for debugging. If both fail, raise
+the user-facing `ValueError`.
 
-def math_embed(
-    title: str,
-    result: str,
-    steps: Optional[list] = None,
-    footer: str = "",
-) -> discord.Embed:
-    embed = discord.Embed(title=title, colour=COLOUR)
-    embed.add_field(name="Result", value=f"```{result}```", inline=False)
-    if steps:
-        step_text = "\n".join(f"**{i+1}. {desc}**\n`{val}`" for i, (desc, val) in enumerate(steps))
-        embed.add_field(name="Steps", value=step_text[:1024], inline=False)
-    if footer:
-        embed.set_footer(text=footer)
-    return embed
-
-def error_embed(message: str) -> discord.Embed:
-    return discord.Embed(
-        title="Parse error",
-        description=message,
-        colour=discord.Colour.red()
-    )
-```
+**Files affected:** `utils/parser.py`
 
 ---
 
-### `utils/paginator.py` — Paginated Views
+### 20. `/solve` support for systems of equations
 
-```python
-import discord
-from typing import List
+**Problem:**
+`/solve` only handles a single expression for one variable. Solving systems of
+equations (e.g. `x + y = 5, x - y = 1`) requires users to use `/rref`
+manually, which returns row-reduced form rather than clean `x = ..., y = ...`
+output.
 
-class PaginatorView(discord.ui.View):
-    def __init__(self, pages: List[discord.Embed], timeout: float = 120):
-        super().__init__(timeout=timeout)
-        self.pages = pages
-        self.index = 0
-        self._update_buttons()
+**Fix:**
+Add a `/solve_system` command to `cogs/arithmetic.py` (or the planned new
+`cogs/equations.py`). Accept multiple equations as a single string separated
+by commas or semicolons, parse each through `parse_expression()`, and pass the
+list to `sympy.solve()` with the detected free symbols. Return results
+formatted as `variable = value` per line, with a fallback to `sympy.linsolve()`
+for linear systems for cleaner output.
 
-    def _update_buttons(self):
-        self.prev_btn.disabled = self.index == 0
-        self.next_btn.disabled = self.index == len(self.pages) - 1
-
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.index -= 1
-        self._update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
-
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.index += 1
-        self._update_buttons()
-        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
-```
+**Files affected:** `cogs/arithmetic.py` or new `cogs/equations.py`
 
 ---
 
-### `data/cache.py` — TTL Cache
+### 21. `/units` command for dimensional analysis
 
-```python
-from cachetools import TTLCache
-import config
+**Problem:**
+`/convert` handles unit conversion for a fixed set of hardcoded categories
+(length, mass, temperature). It can't handle compound units, derived units, or
+unit arithmetic (e.g. `9.8 m/s^2`).
 
-_cache: TTLCache = TTLCache(maxsize=config.CACHE_MAXSIZE, ttl=config.CACHE_TTL)
+**Fix:**
+Add a `/units` command to `cogs/utility.py` backed by
+`sympy.physics.units.convert_to()`. Accept an expression with units (e.g.
+`9.8 * meter / second**2`) and a target unit string, and return the converted
+value. Since `sympy.physics.units` is already available as part of the SymPy
+install, this requires no new dependency. Keep the existing `/convert` command
+for simple everyday conversions.
 
-def get(key: str):
-    return _cache.get(key)
-
-def set(key: str, value):
-    _cache[key] = value
-
-def cache_key(*args) -> str:
-    return "|".join(str(a) for a in args)
-```
-
----
-
-### `data/db.py` — SQLite History
-
-```python
-import aiosqlite, datetime
-
-DB_PATH = "data/math_bot.db"
-
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS history (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id   TEXT    NOT NULL,
-                command   TEXT    NOT NULL,
-                input     TEXT    NOT NULL,
-                result    TEXT    NOT NULL,
-                timestamp TEXT    NOT NULL
-            )
-        """)
-        await db.commit()
-
-async def save_history(user_id: int, command: str, input_: str, result: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO history (user_id, command, input, result, timestamp) VALUES (?,?,?,?,?)",
-            (str(user_id), command, input_, result, datetime.datetime.utcnow().isoformat())
-        )
-        await db.commit()
-
-async def get_history(user_id: int, limit: int = 10):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT command, input, result, timestamp FROM history WHERE user_id=? ORDER BY id DESC LIMIT ?",
-            (str(user_id), limit)
-        ) as cursor:
-            return await cursor.fetchall()
-```
+**Files affected:** `cogs/utility.py`
 
 ---
 
-## Phase 3 — Core Cog: Arithmetic & Algebra
+### 22. Step-by-step polynomial solver up to degree 4
 
-**Goal:** `/simplify`, `/solve`, `/expand`, `/factor` working end-to-end.
+**Problem:**
+`/solve` shows step-by-step working only for quadratics via
+`solve_quadratic_steps()`. Cubics and quartics get raw SymPy output with no
+working shown, and the step builder in `utils/solver.py` explicitly bails out
+for non-degree-2 input.
 
-### `cogs/arithmetic.py`
+**Fix:**
+Add `solve_cubic_steps()` and `solve_quartic_steps()` to `utils/solver.py`,
+following the same `StepList` pattern as `solve_quadratic_steps()`. For
+cubics: show the depressed cubic substitution and Cardano's method steps. For
+quartics: show the resolvent cubic approach. Update `/solve` in
+`cogs/arithmetic.py` to dispatch to the correct step builder based on
+`poly.degree()`.
 
-```python
-import discord
-from discord import app_commands
-from discord.ext import commands
-import sympy
-
-from utils.parser import parse_expression
-from utils.formatter import math_embed, error_embed
-from utils.renderer import expr_to_image
-from utils.solver import solve_quadratic_steps
-from data.cache import get, set, cache_key
-from data.db import save_history
-
-class Arithmetic(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-
-    @app_commands.command(name="simplify", description="Simplify a math expression")
-    @app_commands.describe(expression="e.g. x^2 + 2x + 1 or \\frac{x^2-1}{x-1}")
-    async def simplify(self, interaction: discord.Interaction, expression: str):
-        await interaction.response.defer()
-        try:
-            key = cache_key("simplify", expression)
-            if cached := get(key):
-                return await interaction.followup.send(embed=cached)
-
-            expr = await parse_expression(expression)
-            result = sympy.simplify(expr)
-            embed = math_embed("Simplify", str(result))
-            set(key, embed)
-            await save_history(interaction.user.id, "simplify", expression, str(result))
-            await interaction.followup.send(embed=embed)
-        except ValueError as e:
-            await interaction.followup.send(embed=error_embed(str(e)))
-
-    @app_commands.command(name="solve", description="Solve an equation for x")
-    @app_commands.describe(
-        expression="Left-hand side (assumes = 0, e.g. x^2 - 4)",
-        variable="Variable to solve for (default: x)"
-    )
-    async def solve(self, interaction: discord.Interaction, expression: str, variable: str = "x"):
-        await interaction.response.defer()
-        try:
-            expr = await parse_expression(expression)
-            var = sympy.Symbol(variable)
-            steps = solve_quadratic_steps(expr, var)
-            solutions = sympy.solve(expr, var)
-            embed = math_embed(
-                f"Solve for {variable}",
-                ", ".join(str(s) for s in solutions),
-                steps=steps
-            )
-            await interaction.followup.send(embed=embed)
-        except ValueError as e:
-            await interaction.followup.send(embed=error_embed(str(e)))
-
-    @app_commands.command(name="expand", description="Expand a math expression")
-    async def expand(self, interaction: discord.Interaction, expression: str):
-        await interaction.response.defer()
-        try:
-            expr = await parse_expression(expression)
-            result = sympy.expand(expr)
-            await interaction.followup.send(embed=math_embed("Expand", str(result)))
-        except ValueError as e:
-            await interaction.followup.send(embed=error_embed(str(e)))
-
-    @app_commands.command(name="factor", description="Factor a math expression")
-    async def factor(self, interaction: discord.Interaction, expression: str):
-        await interaction.response.defer()
-        try:
-            expr = await parse_expression(expression)
-            result = sympy.factor(expr)
-            await interaction.followup.send(embed=math_embed("Factor", str(result)))
-        except ValueError as e:
-            await interaction.followup.send(embed=error_embed(str(e)))
-
-async def setup(bot):
-    await bot.add_cog(Arithmetic(bot))
-```
-
-**Deliverable:** All four commands working, with caching, history, and error embeds.
+**Files affected:** `utils/solver.py`, `cogs/arithmetic.py`
 
 ---
 
-## Phase 4 — Math Engine Cogs
+### 23. Simultaneous equation solver (`/solve_sim`)
 
-Build these after Phase 3 is solid. Each follows the same pattern as `arithmetic.py`.
+**Problem:**
+The 991CW has a dedicated simultaneous equation solver for 2×2 and 3×3 linear
+systems that returns clean `x = ..., y = ..., z = ...` output. MathFrame has
+no equivalent — `/rref` returns a matrix, not a solution set.
 
-### `cogs/calculus.py` — Commands to implement
+**Fix:**
+Add a `/solve_sim` command (to a new `cogs/equations.py` or
+`cogs/arithmetic.py`) that accepts equations as a comma-separated string,
+parses them, detects the free variables, and calls `sympy.linsolve()` for
+linear systems or `sympy.solve()` for non-linear. Format output as one
+`variable = value` line per variable, with exact fractions preserved.
 
-| Command | SymPy call | Notes |
-|---|---|---|
-| `/diff` | `sympy.diff(expr, var, n)` | `n` = order, default 1 |
-| `/integrate` | `sympy.integrate(expr, var)` | add `(var, a, b)` for definite |
-| `/limit` | `sympy.limit(expr, var, point)` | support `oo` for infinity |
-| `/series` | `sympy.series(expr, var, n=6)` | Taylor/Maclaurin |
-| `/plot` | `plotter.plot_function()` | returns PNG file |
-
-### `cogs/linear_algebra.py` — Commands to implement
-
-| Command | SymPy / NumPy call | Notes |
-|---|---|---|
-| `/matrix_det` | `sympy.Matrix(m).det()` | parse matrix from string |
-| `/matrix_inv` | `sympy.Matrix(m).inv()` | warn if singular |
-| `/eigenvalues` | `sympy.Matrix(m).eigenvals()` | |
-| `/dot` | `numpy.dot(a, b)` | |
-| `/cross` | `numpy.cross(a, b)` | 3D vectors only |
-| `/rref` | `sympy.Matrix(m).rref()` | row-reduced echelon form |
-
-**Matrix input format:** Accept `[[1,2],[3,4]]` as a string and `json.loads()` it.
-
-### `cogs/statistics.py` — Commands to implement
-
-| Command | Library | Notes |
-|---|---|---|
-| `/mean`, `/median`, `/mode` | `statistics` stdlib | |
-| `/stdev`, `/variance` | `statistics` stdlib | |
-| `/normal_pdf` | `scipy.stats.norm` | plot the curve |
-| `/correlation` | `numpy.corrcoef` | |
-| `/regression` | `numpy.polyfit` | linear regression |
-| `/zscore` | manual formula | |
+**Files affected:** new `cogs/equations.py` or `cogs/arithmetic.py`
 
 ---
 
-## Phase 5 — Extended Math Cogs
+### 24. Table mode (`/table`)
 
-### `cogs/number_theory.py`
-- `/gcd`, `/lcm` — `math.gcd`, extend for list of numbers
-- `/is_prime` — `sympy.isprime(n)`
-- `/factorize` — `sympy.factorint(n)` → formatted as 2³ × 3 × 7
-- `/primes_up_to` — `sympy.primerange(2, n)`
-- `/modular` — `pow(a, b, m)` for modular exponentiation
-- `/fibonacci` — iterative, up to n=200
+**Problem:**
+The 991CW's TABLE mode generates a value table for f(x) over a range with a
+configurable step — one of the most-used calculator features for students.
+MathFrame has no equivalent.
 
-### `cogs/geometry.py`
-- `/circle_area`, `/circle_circumference`
-- `/triangle_area` — support base+height and Heron's formula
-- `/pythagorean` — find missing side
-- `/trig` — sin/cos/tan with degree/radian toggle
-- `/distance` — 2D and 3D point distance
+**Fix:**
+Add a `/table expression start end step` command to `cogs/arithmetic.py` or a
+new `cogs/utility.py` section. Parse the expression through `parse_expression()`,
+evaluate it at each point using `sympy.lambdify()` over a `numpy.arange()`, and
+format the result as a paginated embed table (`x | f(x)` rows). Cap the number
+of rows (e.g. 200) to avoid embed flooding, and use the existing
+`utils/paginator.py` for multi-page output.
 
-### `cogs/discrete.py`
-- `/permutation` — `math.perm(n, r)`
-- `/combination` — `math.comb(n, r)`
-- `/truth_table` — parse logical expression, output all rows
-- `/set_ops` — union, intersection, difference from two lists
-- `/binomial_coeff` — Pascal's triangle row
-
-### `cogs/symbolic.py`
-- `/latex` — convert any expression to LaTeX string + render PNG
-- `/subs` — substitute variable values into expression
-- `/partial_fraction` — `sympy.apart(expr, var)`
-- `/roots` — `sympy.roots(expr, var)` with multiplicity
+**Files affected:** `cogs/arithmetic.py` or `cogs/utility.py`,
+`utils/paginator.py`
 
 ---
 
-## Phase 6 — History & Utility Commands
+### 25. Complex number cog (`cogs/complex.py`)
 
-### `cogs/utility.py`
+**Problem:**
+The 991CW handles complex numbers natively — rectangular/polar form conversion,
+argument, conjugate, modulus, and arithmetic. MathFrame has no complex number
+commands at all, even though SymPy fully supports them.
 
-```python
-@app_commands.command(name="history", description="View your last 10 calculations")
-async def history(self, interaction: discord.Interaction):
-    rows = await get_history(interaction.user.id)
-    if not rows:
-        return await interaction.response.send_message("No history yet.")
-    pages = []
-    for i in range(0, len(rows), 5):
-        chunk = rows[i:i+5]
-        embed = discord.Embed(title="Your history", colour=discord.Colour.blurple())
-        for cmd, inp, res, ts in chunk:
-            embed.add_field(name=f"/{cmd} `{inp}`", value=f"→ `{res}`\n*{ts[:10]}*", inline=False)
-        pages.append(embed)
-    view = PaginatorView(pages)
-    await interaction.response.send_message(embed=pages[0], view=view)
-```
+**Fix:**
+Create a new `cogs/complex.py` cog with the following commands:
+- `/complex_calc expression` — evaluate any complex expression (e.g. `(2+3i)*(1-i)`)
+- `/complex_polar expression` — convert to polar form (modulus + argument)
+- `/complex_rect r theta` — convert polar → rectangular
+- `/complex_conjugate expression` — return the conjugate
+- `/complex_modulus expression` — return `|z|`
 
-Other utility commands: `/help_math` (command list embed), `/constants` (π, e, φ, etc.),
-`/convert` (unit conversions via `sympy.physics.units`).
+Parse input through `parse_expression()` with `I` mapped to `sympy.I`.
+Register the new cog in `main.py`'s `COGS` list.
+
+**Files affected:** new `cogs/complex.py`, `main.py`
 
 ---
 
-## Phase 7 — Error Handling & Edge Cases
+### 26. Base-N arithmetic cog (`cogs/base_n.py`)
 
-Add these guards across all cogs before considering the bot production-ready.
+**Problem:**
+The 991CW has a dedicated base-N mode for binary, octal, decimal, and
+hexadecimal conversions and arithmetic. MathFrame has no equivalent.
 
-```python
-# Global error handler in main.py
-@bot.tree.error
-async def on_app_command_error(interaction, error):
-    if isinstance(error, app_commands.CommandOnCooldown):
-        await interaction.response.send_message(
-            f"Slow down! Try again in {error.retry_after:.1f}s.", ephemeral=True)
-    else:
-        await interaction.response.send_message(
-            "Something went wrong. Try again.", ephemeral=True)
-        raise error  # still log it
-```
+**Fix:**
+Create a new `cogs/base_n.py` cog with the following commands:
+- `/base_convert value from_base to_base` — convert between any two bases (2–36)
+- `/base_add a b base` — add two numbers in a given base, show result in same base
+- `/base_logic a b operation base` — AND/OR/XOR/NOT on integers in a given base
+- `/bases value` — show a decimal value in binary, octal, and hex simultaneously
 
-**Edge cases to handle per cog:**
+Use Python's built-in `int(value, base)` and `format(n, 'b'/'o'/'x')` — no
+SymPy needed. Register in `main.py`'s `COGS` list.
 
-| Situation | Response |
-|---|---|
-| Division by zero in expression | Catch `ZeroDivisionError`, send error embed |
-| Complex/imaginary results | Show result, note it is complex |
-| Empty result set (no solutions) | "No real solutions found." |
-| Matrix not square (for det/inv) | "Matrix must be square." |
-| Overflow (e.g. 9999!) | Timeout catches it; "Too large to compute." |
-| User types `1/0` literally | Parser returns `zoo` (SymPy's complex infinity) |
+**Files affected:** new `cogs/base_n.py`, `main.py`
 
 ---
 
-## Phase 8 — Polish & Deployment
+### 27. Inequality solver cog (`cogs/inequalities.py`)
 
-- Add `@app_commands.checks.cooldown(1, 3.0)` to expensive commands
-- Add `ephemeral=True` to error responses (only visible to the user who made the error)
-- Add logging: `import logging; logging.basicConfig(level=logging.INFO)`
-- Add `/about` command showing bot version, library versions, invite link
-- Test every command with: empty input, very long input, LaTeX input, plain text input, natural language
+**Problem:**
+`/plot` can graph inequalities visually but there is no command that *solves*
+an inequality symbolically and returns the solution set (e.g.
+`x^2 - 3x + 2 < 0` → `1 < x < 2`).
 
-### Running in production (Windows)
+**Fix:**
+Create a new `cogs/inequalities.py` cog with the following commands:
+- `/solve_ineq expression` — solve a single inequality, return solution set
+  as an interval or union of intervals using `sympy.solve_univariate_inequality()`
+- `/solve_ineq_system expressions` — solve a system of inequalities using
+  `sympy.reduce_inequalities()`
 
-```bash
-python main.py
-```
+Parse input through `parse_expression()`. Format results using SymPy's
+`Interval` and `Union` pretty-printing. Register in `main.py`'s `COGS` list.
 
-For always-on hosting: deploy to a VPS or use a service like Railway/Render.
-They offer free tiers sufficient for a Discord bot.
+**Files affected:** new `cogs/inequalities.py`, `main.py`
 
 ---
 
-## Build Order Summary
+### Numerical differentiation at a point
 
-```
-Phase 1  →  Bot connects, cog loader works
-Phase 2  →  parser.py, renderer.py, plotter.py, formatter.py, db.py, cache.py
-Phase 3  →  arithmetic.py (/simplify, /solve, /expand, /factor)  ← test everything here
-Phase 4  →  calculus.py, linear_algebra.py, statistics.py
-Phase 5  →  number_theory.py, geometry.py, discrete.py, symbolic.py
-Phase 6  →  history command, help command, constants
-Phase 7  →  error handling, edge cases, cooldowns
-Phase 8  →  logging, deployment, invite link
-```
+**Problem:**
+`/diff` performs symbolic differentiation but cannot evaluate `f'(a)` at a
+specific numeric point when the symbolic derivative is unavailable or the user
+just wants a decimal answer. The 991CW supports this natively.
 
-Do NOT skip Phase 2. Every cog depends on `parser.py` and `formatter.py`.
-Do NOT skip the validation in `parser.py`. Unsanitized `eval()` is a security hole.
+**Fix:**
+Add an optional `at` parameter to `/diff` in `cogs/calculus.py`. When
+supplied, substitute the value into the symbolic derivative result using
+`sympy.subs()` and return both the symbolic derivative and the numeric
+evaluation. If symbolic differentiation fails, fall back to a numerical
+estimate using the central difference formula via `numpy` and flag it as
+approximate in the embed footer.
+
+**Files affected:** `cogs/calculus.py`
+
+---
+
+### 31. Summation and product commands (`/sum_series`, `/product_series`)
+
+**Problem:**
+The 991CW has Σ and Π functions for evaluating finite sums and products.
+SymPy has `summation()` and `product()` built in but MathFrame exposes no
+commands for them.
+
+**Fix:**
+Add two commands to `cogs/calculus.py`:
+- `/sum_series expression variable lower upper` — evaluate `Σ f(n)` from
+  `lower` to `upper` (or `oo` for infinite series) using `sympy.summation()`
+- `/product_series expression variable lower upper` — evaluate `Π f(n)` using
+  `sympy.product()`
+
+Parse the expression through `parse_expression()`. For infinite upper bounds,
+accept `oo` as a string and map to `sympy.oo`. Display both exact and decimal
+results where applicable.
+
+**Files affected:** `cogs/calculus.py`
+
+---
+
+### 32. Polynomial division (`/poly_div`)
+
+**Problem:**
+The 991CW can divide two polynomials and show quotient and remainder
+separately. MathFrame has no equivalent — `/simplify` and `/factor` don't
+expose the quotient/remainder decomposition.
+
+**Fix:**
+Add a `/poly_div dividend divisor [variable]` command to `cogs/arithmetic.py`.
+Parse both expressions through `parse_expression()`, then call
+`sympy.div(dividend, divisor, variable)` which returns `(quotient, remainder)`.
+Display both in the embed result, plus a verification line
+`dividend = divisor × quotient + remainder`.
+
+**Files affected:** `cogs/arithmetic.py`
+
+---
+
+### 33. Expression equivalence checker (`/verify`)
+
+**Problem:**
+Students frequently want to check whether their simplified answer matches the
+expected form. There is no command for this — they'd have to `/simplify` both
+sides and visually compare.
+
+**Fix:**
+Add a `/verify expr_a expr_b` command to `cogs/arithmetic.py`. Parse both
+expressions through `parse_expression()`, then evaluate
+`sympy.simplify(expr_a - expr_b)`. If the result is `0`, return a green
+"✅ Equivalent" embed; otherwise return a red "❌ Not equivalent" embed showing
+the simplified difference. Add a note in the footer that equivalence checking
+uses symbolic simplification and may time out for complex expressions.
+
+**Files affected:** `cogs/arithmetic.py`
+
+---
+
+### 34. Extended statistics — CDF and inverse CDF (`/cdf`, `/inv_normal`)
+
+**Problem:**
+The 991CW has cumulative distribution functions for normal, binomial, and
+Poisson distributions, plus inverse normal. MathFrame's `/normal_pdf` only
+plots the PDF curve — no CDF, no inverse CDF, and no binomial or Poisson
+support at all.
+
+**Fix:**
+Add the following commands to `cogs/statistics.py`, backed by `scipy.stats`:
+- `/normal_cdf mean stdev lower upper` — P(lower ≤ X ≤ upper) for a normal dist
+- `/inv_normal probability mean stdev` — inverse normal (find x given P(X ≤ x))
+- `/binomial_cdf n p x` — P(X ≤ x) for Binomial(n, p)
+- `/poisson_cdf lambda x` — P(X ≤ x) for Poisson(λ)
+
+`scipy.stats` is already a declared dependency. Return both the probability
+value and a small plotted CDF curve image using the existing plotting path in
+`utils/plotter.py`.
+
+**Files affected:** `cogs/statistics.py`, `utils/plotter.py`
+
+---
+
+### 35. Differential equations (`/ode`)
+
+**Problem:**
+The 991CW doesn't support ODEs, but adding them would make MathFrame
+meaningfully more powerful than a physical calculator. SymPy's `dsolve()`
+handles first and second order ODEs cleanly, including initial value problems.
+
+**Fix:**
+Add a `/ode expression [initial_conditions]` command to `cogs/calculus.py`.
+Accept expressions written with `f(x)` and `f'(x)` notation (or `y` and
+`y'`), parse the ODE, and call `sympy.dsolve()`. Accept optional initial
+conditions as a `"f(0)=1, f'(0)=0"` style string, parsed similarly to
+`_parse_substitutions()` in `symbolic.py`. Display the general or particular
+solution in the embed, rendered as an image via `utils/renderer.py`.
+
+**Files affected:** `cogs/calculus.py`, `utils/parser.py`
+
+---
+
+### 36. `/quickplot` domain auto-detection
+
+**Problem:**
+`/quickplot` defaults to a fixed domain if no range is specified. For
+functions with poles, asymptotes, or interesting behaviour in non-default
+ranges (e.g. `ln(x)`, `tan(x)`, `1/x`), the default window often produces
+an unhelpful or visually broken plot.
+
+**Fix:**
+In `cogs/plot_engine.py`'s `/quickplot` handler, before passing the domain to
+`plotter.py`, add an auto-detection step:
+- Lambdify the expression and sample it over a broad range (`-50` to `50`).
+- Find the largest contiguous region where the function is finite and
+  well-defined.
+- Clip the y-axis to `±10 × median(|f(x)|)` to suppress spike artifacts near
+  discontinuities.
+- Use the detected range as the default, overrideable by the user's explicit
+  `domain` argument.
+
+**Files affected:** `cogs/plot_engine.py`, `utils/plotter.py`
+
+---
+
+### 37. Multiplot legend labels
+
+**Problem:**
+`/multiplot` renders up to 4 functions as side-by-side subplots but doesn't
+label which curve corresponds to which expression in the image itself. Users
+have to mentally match the input order to the panel order.
+
+**Fix:**
+In `utils/plotter.py`'s `plot_multi()` function, add a title to each subplot
+axes using `ax.set_title(expr_str, fontsize=9, pad=4)`, truncating long
+expressions to a configurable character limit (e.g. 40 chars) with an ellipsis.
+Optionally also add a colour-coded legend if multiple expressions are drawn on
+the same axes panel.
+
+**Files affected:** `utils/plotter.py`
+
+---
+
+## Summary Table
+
+| # | Category | Item | Files |
+|---|---|---|---|
+| 1 | Security | Route plot expressions through `parser.py` | `utils/expr_utils.py` |
+| 2 | Security | Fix direct `sympify()` call sites | `cogs/calculus.py`, `cogs/symbolic.py` |
+| 6 | Error Handling | Broaden exception handling in cogs | `cogs/arithmetic.py`, `cogs/calculus.py`, `cogs/symbolic.py` |
+| 10 | Code Quality | Extract stats plotting into `plotter.py` | `utils/plotter.py`, `cogs/statistics.py` |
+| 12 | Feature | Per-server command permissions | `main.py`, new `cogs/admin.py`, new `data/permissions.py` |
+| 14 | Feature | LaTeX rendering fallback | `utils/parser.py` |
+| 16 | Error Handling | Computation timeout per cog | `config.py`, multiple cogs |
+| 20 | Feature | `/solve` system of equations | `cogs/arithmetic.py` |
+| 21 | Feature | `/units` dimensional analysis | `cogs/utility.py` |
+| 22 | Feature | Polynomial solver up to degree 4 | `utils/solver.py`, `cogs/arithmetic.py` |
+| 23 | Feature | Simultaneous equation solver | new `cogs/equations.py` |
+| 24 | Feature | Table mode `/table` | `cogs/arithmetic.py` or `cogs/utility.py` |
+| 25 | Feature | Complex number cog | new `cogs/complex.py` |
+| 26 | Feature | Base-N arithmetic cog | new `cogs/base_n.py` |
+| 27 | Feature | Inequality solver cog | new `cogs/inequalities.py` |
+| — | Feature | Numerical differentiation at a point | `cogs/calculus.py` |
+| 31 | Feature | Summation and product commands | `cogs/calculus.py` |
+| 32 | Feature | Polynomial division `/poly_div` | `cogs/arithmetic.py` |
+| 33 | Feature | Expression equivalence checker `/verify` | `cogs/arithmetic.py` |
+| 34 | Feature | Extended statistics CDF/inverse CDF | `cogs/statistics.py`, `utils/plotter.py` |
+| 35 | Feature | Differential equations `/ode` | `cogs/calculus.py` |
+| 36 | Feature | `/quickplot` domain auto-detection | `cogs/plot_engine.py`, `utils/plotter.py` |
+| 37 | Feature | Multiplot legend labels | `utils/plotter.py` |

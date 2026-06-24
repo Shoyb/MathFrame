@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from data.permissions import is_command_allowed
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -30,6 +31,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 COGS: list[str] = [
+    "cogs.admin",
     "cogs.arithmetic",
     "cogs.calculus",
     "cogs.linear_algebra",
@@ -38,6 +40,10 @@ COGS: list[str] = [
     "cogs.geometry",
     "cogs.discrete",
     "cogs.symbolic",
+    "cogs.equations",
+    "cogs.inequalities",
+    "cogs.complex",
+    "cogs.base_n",
     "cogs.utility",
     "cogs.render",
     "cogs.plot_engine",
@@ -114,6 +120,41 @@ async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         f"Pong! `{latency_ms} ms`"
     )
+
+# ---------------------------------------------------------------------------
+# Global before_invoke — permission enforcement
+# ---------------------------------------------------------------------------
+
+@bot.tree.interaction_check
+async def _permission_check(interaction: discord.Interaction) -> bool:
+    """
+    Global pre-invoke check for all slash commands.
+
+    Consults ``data.permissions.is_command_allowed()`` using the guild ID,
+    channel ID, and command name.  If the rule denies the command, an
+    ephemeral error message is sent and ``False`` is returned so discord.py
+    cancels the invocation before the cog handler runs.
+
+    DMs (no guild) are always allowed; the admin system is guild-only.
+    """
+    if interaction.guild_id is None:
+        return True  # DMs always allowed
+
+    command_name = interaction.command.name if interaction.command else None
+    if command_name is None:
+        return True
+
+    channel_id = interaction.channel_id or 0
+
+    if not is_command_allowed(interaction.guild_id, channel_id, command_name):
+        await interaction.response.send_message(
+            f"🚫 `/{command_name}` is disabled in this channel. "
+            "Ask a server admin to enable it with `/admin enable`.",
+            ephemeral=True,
+        )
+        return False
+
+    return True
 
 # ---------------------------------------------------------------------------
 # Global app_commands error handler

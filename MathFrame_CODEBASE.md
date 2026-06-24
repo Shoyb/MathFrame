@@ -29,21 +29,25 @@ MathFrame/
 │   ├── plotter.py               Low-level plotting engine (matplotlib figure builders)
 │   └── utility.py               ⚠ Orphaned duplicate of cogs/utility.py — not loaded anywhere
 └── cogs/
-    ├── arithmetic.py        /simplify /solve /expand /factor
-    ├── calculus.py           /diff /integrate /limit /series
+    ├── arithmetic.py        /simplify /solve /expand /factor /table /poly_div /verify
+    ├── calculus.py           /diff /integrate /limit /series /sum_series /product_series /ode
     ├── linear_algebra.py     /matrix_det /matrix_inv /eigenvalues /dot /cross /rref
-    ├── statistics.py          /mean /median /mode /stdev /variance /zscore /correlation /regression /normal_pdf
+    ├── statistics.py          /mean /median /mode /stdev /variance /zscore /correlation /regression /normal_pdf /normal_cdf /inv_normal /binomial_cdf /poisson_cdf
     ├── number_theory.py       /gcd /lcm /is_prime /factorize /primes_up_to /modular /fibonacci
     ├── geometry.py             /circle_area /circle_circumference /triangle_area /pythagorean /trig /distance
     ├── discrete.py              /permutation /combination /truth_table /set_ops /binomial_coeff
     ├── symbolic.py               /latex /subs /partial_fraction /roots
+    ├── equations.py               /solve_sim
+    ├── complex.py                  /complex_eval /complex_polar /complex_rect
+    ├── base_n.py                   /base_convert /base_math /base_logic
+    ├── inequalities.py              /solve_ineq
     ├── utility.py                  /history /clear_history /constants /help_math /convert /about
     ├── render.py                    /render /formula
     ├── plot_engine.py                 /plot_import /plot /quickplot /multiplot  (interactive plot builder)
     └── wiki.py                         /wiki /wiki_search
 ```
 
-Total: ~10,800 lines of Python across 12 cogs and 8 utility/data modules
+Total: ~12,000 lines of Python across 16 cogs and 8 utility/data modules
 (excluding `__pycache__`, which — see Known Issues — should not be in the
 repo at all).
 
@@ -122,7 +126,9 @@ the underlying parsers directly."* It implements:
 - `parse_expression()` — the async public entry point. Runs the blocking
   parse inside a shared `ThreadPoolExecutor(max_workers=4)`, wrapped in
   `asyncio.wait_for(..., timeout=COMPUTE_TIMEOUT)`, translating timeouts
-  and parser exceptions into a single user-friendly `ValueError`.
+  and parser exceptions into a single user-friendly `ValueError`. It also
+  includes a fallback mechanism for LaTeX inputs that fail in `latex2sympy2`,
+  attempting to parse them via plain notation before raising an error.
 
 This is used correctly by `arithmetic.py`, most of `calculus.py`,
 `symbolic.py`, and `render.py`.
@@ -260,9 +266,12 @@ via `@app_commands.checks.cooldown`.
 ### Arithmetic (`cogs/arithmetic.py`)
 - `/simplify expression` — simplify a mathematical expression
 - `/solve expression [variable=x]` — solve `expression = 0`; shows
-  step-by-step working for quadratics
+  step-by-step working for quadratics and polynomials up to degree 4.
 - `/expand expression` — distribute/expand
 - `/factor expression` — factor, with steps
+- `/table expression start end step` — generate a value table
+- `/poly_div numerator denominator` — polynomial division
+- `/verify expr1 expr2` — expression equivalence checker
 
 ### Calculus (`cogs/calculus.py`)
 - `/diff expression [variable] [order]` — differentiate, with steps
@@ -271,6 +280,9 @@ via `@app_commands.checks.cooldown`.
 - `/limit expression variable point [direction]` — evaluate a limit
 - `/series expression [variable] [point] [order]` — Taylor/Maclaurin
   expansion
+- `/sum_series expression variable [lower] [upper]` — evaluate a summation (Σ)
+- `/product_series expression variable [lower] [upper]` — evaluate a product (Π)
+- `/ode expression [initial_conditions]` — solve a differential equation
 
 ### Linear Algebra (`cogs/linear_algebra.py`)
 - `/matrix_det matrix` — determinant
@@ -287,6 +299,10 @@ via `@app_commands.checks.cooldown`.
 - `/correlation x y` — Pearson correlation coefficient
 - `/regression x y` — linear regression fit, returns a plotted image
 - `/normal_pdf mean stdev` — plots a normal distribution's PDF
+- `/normal_cdf value mean stdev` — plots a normal CDF up to a value
+- `/inv_normal prob mean stdev` — inverse normal CDF (Z-score to value)
+- `/binomial_cdf n p x` — binomial cumulative probability
+- `/poisson_cdf lam x` — poisson cumulative probability
 
 ### Number Theory (`cogs/number_theory.py`)
 - `/gcd numbers`, `/lcm numbers` — GCD/LCM of a list of integers
@@ -316,6 +332,22 @@ via `@app_commands.checks.cooldown`.
   `substitutions: "x=2, y=pi"`
 - `/partial_fraction expression` — partial fraction decomposition
 - `/roots expression` — all roots, set equal to zero
+
+### Equations (`cogs/equations.py`)
+- `/solve_sim equations [variables]` — solve a system of equations
+
+### Complex (`cogs/complex.py`)
+- `/complex_eval expression` — evaluate a complex number expression
+- `/complex_polar expression` — convert to polar form
+- `/complex_rect expression` — convert to rectangular form
+
+### Base-N (`cogs/base_n.py`)
+- `/base_convert number from_base to_base` — convert between bases
+- `/base_math expr base` — evaluate arithmetic in a specific base
+- `/base_logic expr` — bitwise logic evaluation
+
+### Inequalities (`cogs/inequalities.py`)
+- `/solve_ineq expression` — solve symbolic inequalities
 
 ### Utility (`cogs/utility.py`)
 - `/history` — show recent calculation history (in-memory, per-user)
@@ -610,17 +642,28 @@ logic that also exists (in more complete form, with `/history` and
 ### `cogs/arithmetic.py`
 
 No module-level helper functions — the simplest cog in the codebase.
-Four commands on `ArithmeticCog`, all following an identical four-step
+Seven commands on `ArithmeticCog`, most following an identical four-step
 shape: build a cache key and return early on a hit, call
 `parse_expression`, run one SymPy function (`simplify`/`solve`/`expand`/
-`factor`), build and cache a `math_embed`. `/solve` is the one command
+`factor`/`poly_div`/`verify`), build and cache a `math_embed`. `/solve` is the one command
 that doesn't use the result cache (solutions plus step-by-step working
 are cheap enough, and the steps depend on `solve_quadratic_steps`'
 separate non-cached path) — it instead inspects whether
-`solve_quadratic_steps` returned an `[("Error", ...)]` sentinel and
-suppresses the steps field entirely when the equation isn't a quadratic,
+`solve_quadratic_steps` or `solve_polynomial_steps` returned an `[("Error", ...)]` sentinel and
+suppresses the steps field entirely when the equation isn't a supported polynomial,
 rather than showing a misleading "Error" steps block alongside a valid
-result.
+result. `/table` acts slightly differently, building a chunked markdown table
+output.
+
+### `cogs/base_n.py`
+
+Dedicated to integer parsing and bitwise math. Implements `_parse_in_base()`
+to safely parse base-N string inputs (from base 2 up to 36) into standard
+Python integers, and `_format_in_base()` to format results. Features
+`/base_convert`, `/base_math` for arithmetic in custom bases, and
+`/base_logic` which heavily relies on Python's native `eval` wrapped inside
+a safe execution environment restricted to bitwise operators and integers,
+rather than routing through SymPy.
 
 ### `cogs/calculus.py`
 
@@ -628,10 +671,20 @@ Two module-level helpers: `_ordinal(n)` (English ordinal suffixes for
 display, e.g. "2nd derivative") and `_parse_point(point_str)` (handles
 `oo`/`+oo`/`-oo`/`inf` specially before falling back to
 `sympy.sympify` for everything else — one of the direct-`sympify` call
-sites flagged in Known Issues §1). `CalculusCog` has four commands
-(`diff`, `integrate`, `limit`, `series`); `integrate` branches on whether
+sites flagged in Known Issues §1). `CalculusCog` has seven commands
+(`diff`, `integrate`, `limit`, `series`, `sum_series`, `product_series`, `ode`); `integrate` branches on whether
 both `lower` and `upper` were supplied (definite) or left blank
-(indefinite) rather than exposing them as separate commands.
+(indefinite) rather than exposing them as separate commands. `/ode` introduces
+custom string replacement to parse prime notation like `f'(x)` or `y''` into proper
+`sympy.Derivative` objects prior to parsing, and runs `sympy.dsolve` in
+a thread pool.
+
+### `cogs/complex.py`
+
+Handles evaluation and transformation of complex numbers. Implements
+`/complex_eval`, `/complex_polar`, and `/complex_rect`. Features robust
+conversion of results to readable `a + bi` formats or Euler forms
+using `sympy.expand(complex=True)` and regex post-processing.
 
 ### `cogs/discrete.py`
 
@@ -656,6 +709,12 @@ fit Discord's field limit), and `_parse_set_element()` /`_parse_set()` /
 (`_parse_set_element` tries `int` → `float` → raw string, in that order,
 so `"1, 2.5, apple"` parses each element as specifically as possible).
 
+### `cogs/equations.py`
+
+Dedicated to solving systems of equations (`/solve_sim`). Handles comma-separated
+strings of equations and dynamically determines the variables involved. Uses
+`sympy.nonlinsolve` for broad algebraic solving capabilities.
+
 ### `cogs/geometry.py`
 
 Two helpers: `_exact_and_decimal()` (the shared "show both the exact
@@ -668,6 +727,12 @@ exactness that the rest of the pipeline wants to preserve). Commands like
 (`base`/`height` vs `a`/`b`/`c`; or any two of `a`/`b`/`c`) and branch
 internally on which combination was actually supplied, rather than
 requiring separate commands per input mode.
+
+### `cogs/inequalities.py`
+
+Implements `/solve_ineq` for symbolic inequalities. Employs `sympy.reduce_inequalities`
+and handles both single and compound inequalities. Contains fallback logic
+for solving sets over specific domains (like `sympy.S.Reals`).
 
 ### `cogs/linear_algebra.py`
 
@@ -740,12 +805,10 @@ Module-level `parse_numbers()` (comma-separated → `list[float]`, used by
 nearly every command in the cog) plus three more specialized helpers:
 `_correlation_label()` (maps a Pearson *r* value to a human-readable
 strength description — "strong", "moderate", etc.), and
-`_regression_plot_bytes()` / `_normal_pdf_bytes()`, which build their
-matplotlib figures directly in this cog file rather than through
-`utils/plotter.py` — i.e. `statistics.py` has its own small, independent
-plotting code path parallel to (not reusing) the much larger plotting
-engine, since its needs (a scatter + fitted line, or a single PDF curve)
-are simple enough not to warrant going through `PlotSpec`/`StyleOptions`.
+`_regression_plot_bytes()`. `/normal_pdf`, `/normal_cdf`, `/inv_normal`,
+`/binomial_cdf`, and `/poisson_cdf` build their matplotlib figures by relying
+on `scipy.stats` distributions (e.g. `norm`, `binom`, `poisson`) and the headless
+`Agg` backend. These plots are run in a thread-pool executor to prevent blocking the async loop.
 
 ### `cogs/symbolic.py`
 

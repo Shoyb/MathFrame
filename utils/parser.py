@@ -12,6 +12,9 @@ latex   : ``\\frac{1}{2}``, ``\\int x\\,dx``, ``\\sqrt{x}``, ``\\sin(x)``,
           ``x^{2}``, ``\\alpha``, ``\\pi``, ``\\cdot``, and many more.
           Triggered by a leading backslash, any recognised LaTeX macro,
           or braced exponents like ``x^{2}``.  Parsed via latex2sympy2.
+          If latex2sympy2 fails, a second attempt is made using SymPy's
+          own ``parse_expr`` pipeline (plain/implicit-multiplication mode)
+          before the error is surfaced to the user.
 python  : ``x**2 + 2*x``, ``math.sin(x)``.  Carets are still normalised
           so mixed inputs like ``x^2 + math.sin(x)`` work correctly.
 natural : ``x squared plus 2 times x``
@@ -19,6 +22,7 @@ plain   : ``x^2 + 2x``  -- default; handles caret and implicit multiplication
 """
 
 import asyncio
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -246,10 +250,29 @@ def _parse_blocking(raw: str) -> sympy.Expr:
         :class:`ValueError`.
     """
     fmt = _detect_format(raw)
+    _log = logging.getLogger(__name__)
 
     if fmt == "latex":
         from latex2sympy2 import latex2sympy  # lazy import — only when needed
-        return latex2sympy(raw)
+        try:
+            return latex2sympy(raw)
+        except Exception as latex_exc:
+            # latex2sympy2 can fail on edge-case syntax or after library updates.
+            # Log the failure for debugging and attempt a plain-notation fallback
+            # before surfacing an error to the user.
+            _log.warning(
+                "latex2sympy2 failed to parse %r (%s); trying plain-notation fallback.",
+                raw,
+                latex_exc,
+            )
+            try:
+                return _normalize_plain(raw)
+            except Exception as fallback_exc:
+                raise ValueError(
+                    f"LaTeX parse failed ({latex_exc}). "
+                    f"Plain-notation fallback also failed ({fallback_exc}). "
+                    "Try rewriting the expression in plain notation (e.g. x^2 + 2*x)."
+                ) from fallback_exc
 
     if fmt == "python":
         # Route through _normalize_plain so that carets and implicit

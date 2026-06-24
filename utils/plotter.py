@@ -1102,18 +1102,42 @@ def _render_spec_onto_axes(
         f  = _lambdify1(spec.expr, spec.var)
         xs = np.linspace(spec.x_min, spec.x_max, PLOT_POINTS)
         ys = _eval1(f, xs)
+        
+        has_extra = bool(spec.additional_exprs)
         ax.plot(xs, ys, color=style.color, linewidth=style.line_width,
-                linestyle=style.line_style)
+                linestyle=style.line_style, label=_to_math_label(str(spec.expr)) if has_extra else None)
 
         if style.fill_below:
             fill_c = style.fill_color if style.fill_color else style.color
             ax.fill_between(xs, ys, 0, alpha=0.25, color=fill_c)
+            
+        if has_extra:
+            cmap_fn = plt.get_cmap(style.colormap)
+            n_extra = len(spec.additional_exprs)
+            offsets = np.linspace(0.15, 0.85, n_extra) if n_extra > 1 else [0.5]
+            for extra_expr, offset in zip(spec.additional_exprs, offsets):
+                f_extra = _lambdify1(extra_expr, spec.var)
+                ys_extra = _eval1(f_extra, xs)
+                ax.plot(xs, ys_extra, color=cmap_fn(offset), linewidth=style.line_width,
+                        linestyle=style.line_style, label=_to_math_label(str(extra_expr)))
+            ax.legend(loc="upper right", fontsize=8, framealpha=0.7)
 
-        _apply_axes_style(ax, spec.title or str(spec.expr),
+        title_str = spec.title or str(spec.expr)
+        if len(title_str) > 40:
+            title_str = title_str[:37] + "..."
+            
+        _apply_axes_style(ax, title_str,
                           str(spec.var), f"f({spec.var})", style.show_grid,
                           style=style)
 
-        ylim = _smart_ylim(ys, style)
+        # Override title with smaller font if it's a subplot
+        ax.set_title(_to_math_label(title_str), fontsize=9, pad=4)
+
+        all_ys = [ys]
+        if has_extra:
+            for extra_expr in spec.additional_exprs:
+                all_ys.append(_eval1(_lambdify1(extra_expr, spec.var), xs))
+        ylim = _smart_ylim(np.concatenate(all_ys), style)
         if ylim is not None:
             ax.set_ylim(*ylim)
 

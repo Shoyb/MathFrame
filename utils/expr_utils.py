@@ -6,6 +6,11 @@ import re
 
 import sympy
 
+# Import the same validation guard used by parse_expression() so that all
+# expressions entering the plot engine are subject to the same length cap
+# and forbidden-keyword filter.
+from utils.parser import _validate_raw  # noqa: PLC2701 (private import is intentional)
+
 _ASSIGNMENT_PREFIX_RE = re.compile(
     r"^\s*[A-Za-z_]\w*\s*(?:\([^)]*\))?\s*=(?!=)\s*(.+)$"
 )
@@ -40,6 +45,9 @@ def _clean_piecewise_expr(s: str) -> str:
 
 
 def _sympy_expr(s: str, *syms: sympy.Symbol) -> sympy.Expr:
+    # Validate before calling sympify so that length abuse and forbidden
+    # keywords are caught here, not only in the async parse_expression() path.
+    _validate_raw(s)
     try:
         local = {str(sym): sym for sym in syms}
         local["Piecewise"] = sympy.Piecewise
