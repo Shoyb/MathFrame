@@ -199,8 +199,7 @@ Issues §2.
 matplotlib figure builders: `plot_function`, `plot_contour`, `plot_surface`,
 `plot_wireframe`, `plot_vector_field`, `plot_parametric_2d/3d`,
 `plot_polar`, `plot_implicit`, `plot_inequality`, `plot_scatter_3d`,
-`plot_histogram`, `plot_errorbar`, `plot_heatmap`, `plot_boxplot`,
-`plot_points`, `plot_multi` (side-by-side panels), plus animation-frame
+`plot_heatmap`, `plot_points`, `plot_multi` (side-by-side panels), plus animation-frame
 variants used by `plot_engine.py`'s `_render_animation`. Takes a
 `PlotSpec`/`StyleOptions` pair (defined here, imported by the cog) carrying
 domain bounds, resolution (`resolution_1d` for line/parametric plots,
@@ -232,23 +231,21 @@ fill/limit overrides, and animation parameters. `PlotConfig.export_config`/
 `import_config` serialize/deserialize a session to a base64+zlib string so
 sessions can be shared between users via `/plot_import`.
 
-Sixteen supported `PLOT_TYPES`: function, contour, vector-field,
+Thirteen supported `PLOT_TYPES`: function, contour, vector-field,
 parametric-2d, surface, wireframe, parametric-3d, scatter, scatter-3d,
-polar, implicit, inequality, histogram, errorbar, heatmap, boxplot.
+polar, implicit, inequality, heatmap.
 
 UI is built from a stack of `discord.ui.Modal` subclasses (one per concern
 — `ExpressionModal`, `StyleModal`, `AxesModal`, `AdvancedModal`,
 `FillModal`, `LimitsModal`, `AnimationParamModal`, `AdditionalExprModal`)
-opened from buttons/selects on the persistent `PlotEngineView`, plus two
-small picker views (`ThemePickerView`, `ColormapPickerView`). The view also
+opened from buttons/selects on the persistent `PlotEngineView`. The view also
 implements pan/zoom (`_scale_domain`, `_shift_domain` and their button
 handlers) and an export/preview/animate/render pipeline.
 
 Four slash commands: `/plot` (opens the full builder), `/quickplot`
 (renders a function expression immediately, no UI), `/multiplot` (up to 4
 expressions in one side-by-side image), `/plot_import` (loads a shared
-config string). None of `PlotEngineView`, `ThemePickerView`, or
-`ColormapPickerView` define an `interaction_check`, so the builder's
+config string). `PlotEngineView` doesn't define an `interaction_check`, so the builder's
 buttons/selects are not restricted to the user who opened it — see Known
 Issues §2.
 
@@ -360,7 +357,7 @@ directly, on narrower single-value input. Fix: route all three through
 `sympify` in each case.
 
 **2. No per-user `interaction_check` on shared interactive views.**
-`PlotEngineView`, `ThemePickerView`, `ColormapPickerView`
+`PlotEngineView`
 (`cogs/plot_engine.py`) and the wiki paginator have no ownership check, so
 any user in the channel can operate another user's in-progress plot
 session or article paginator. `cogs/utility.py`'s confirmation view does
@@ -721,13 +718,10 @@ on bad input, then calls back into the view to re-render. `PlotEngineView`
 centralizes pan/zoom math in `_scale_domain`/`_shift_domain` (shared by
 the zoom in/out and pan left/right/up/down button handlers) and exposes
 one private handler per button/select (`_on_expr`, `_on_style`,
-`_on_axes`, `_on_advanced`, `_on_fill`, `_on_limits`, `_on_theme`,
-`_on_cmap`, `_on_preview`, `_on_animate`, `_on_render`, `_on_reset`,
+`_on_axes`, `_on_advanced`, `_on_fill`, `_on_limits`, `_on_preview`,
+`_on_animate`, `_on_render`, `_on_reset`,
 etc.) — a flat, one-concern-per-method structure rather than a single
-dispatch-by-custom_id handler. `ThemePickerView` and `ColormapPickerView`
-are small secondary views opened from `PlotEngineView`'s buttons,
-each holding a back-reference to its `parent` so a pick can mutate the
-parent's `cfg` and trigger a re-render of the original message.
+dispatch-by-custom_id handler.
 
 ### `cogs/render.py`
 

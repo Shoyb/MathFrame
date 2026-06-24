@@ -21,11 +21,8 @@ from utils.plotter import (
     PlotSpec,
     StyleOptions,
     plot_contour,
-    plot_boxplot,
-    plot_errorbar,
     plot_function,
     plot_heatmap,
-    plot_histogram,
     plot_implicit,
     plot_inequality,
     plot_parametric_2d,
@@ -62,10 +59,7 @@ PLOT_TYPES = [
     "implicit",
     "inequality",
     "riemann",
-    "histogram",
-    "errorbar",
     "heatmap",
-    "boxplot",
 ]
 
 COLORMAPS = [
@@ -75,6 +69,8 @@ COLORMAPS = [
     "rainbow", "jet", "turbo",
     "gray", "bone", "pink",
 ]
+
+THEMES = ["default", "dark", "academic", "cyberpunk", "seaborn"]
 
 LINE_STYLES = ["solid", "dashed", "dotted", "dashdot"]
 _LS_MAP     = {"solid": "-", "dashed": "--", "dotted": ":", "dashdot": "-."}
@@ -137,8 +133,6 @@ class PlotConfig:
     theta_symbol: str = "theta"
     implicit_rhs: float = 0.0
     inequality_op: str = "<="
-    hist_bins: int = 20
-    box_violin: str = "box"
     riemann_n: int = 8
     riemann_method: str = "left"
 
@@ -288,14 +282,11 @@ def _type_hint(pt: str) -> str:
         "parametric-3d": "3-D curve (x,y,z)(t)",
         "scatter":       "scatter plot of (xs, ys)",
         "scatter-3d":    "3-D scatter of (xs, ys, zs)",
-        "polar":         "polar curve r(θ)",
+        "polar":         "polar curve r(theta)",
         "implicit":      "implicit curve f(x,y)=k",
         "inequality":    "shaded region f(x,y) <= k",
         "riemann":       "Riemann rectangles under f(x)",
-        "histogram":     "distribution of raw data",
-        "errorbar":      "points with vertical errors",
         "heatmap":       "imshow heatmap of f(x,y)",
-        "boxplot":       "box or violin grouped data",
     }.get(pt, "")
 
 
@@ -374,21 +365,11 @@ def _config_embed(cfg: PlotConfig) -> discord.Embed:
         embed.add_field(name="z(t)",    value=f"`{cfg.expr_z}`",                   inline=True)
         embed.add_field(name="t range", value=f"[{cfg.t_min}, {cfg.t_max}]",       inline=True)
 
-    elif cfg.plot_type in ("scatter", "scatter-3d", "errorbar"):
+    elif cfg.plot_type in ("scatter", "scatter-3d"):
         embed.add_field(name="xs", value=f"`{cfg.scatter_xs[:60]}`",               inline=False)
         embed.add_field(name="ys", value=f"`{cfg.scatter_ys[:60]}`",               inline=False)
         if cfg.plot_type == "scatter-3d":
             embed.add_field(name="zs", value=f"`{cfg.scatter_zs[:60]}`",           inline=False)
-        elif cfg.plot_type == "errorbar":
-            embed.add_field(name="y errors", value=f"`{cfg.expr_z[:60]}`",          inline=False)
-
-    elif cfg.plot_type == "histogram":
-        embed.add_field(name="data", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
-        embed.add_field(name="bins", value=f"`{cfg.hist_bins}`", inline=True)
-
-    elif cfg.plot_type == "boxplot":
-        embed.add_field(name="groups", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
-        embed.add_field(name="mode", value=f"`{cfg.box_violin}`", inline=True)
 
     elif cfg.plot_type == "polar":
         embed.add_field(name="r(θ)",     value=f"`{cfg.expr_main}`",                inline=False)
@@ -480,16 +461,16 @@ class AnimationParamModal(ui.Modal, title="Animation Settings"):
 class ExpressionModal(ui.Modal, title="Expressions & Domain"):
     """Collects function expressions and domain/range values."""
 
-    expr_a   = ui.TextInput(label="Expression A  (see hint in embed)",
-                             placeholder="e.g. sin(x)/x   or   1+cos(theta)",
+    expr_a   = ui.TextInput(label="Expression A",
+                             placeholder="e.g. sin(x)/x",
                              required=False, max_length=300)
-    expr_b   = ui.TextInput(label="Expr B (u/vector, y(t)/parametric, θ-sym/polar)",
+    expr_b   = ui.TextInput(label="Expression B",
                              placeholder="e.g. cos(t)  or  -y  or  theta",
                              required=False, max_length=300)
-    expr_c   = ui.TextInput(label="Expr C (v for vector, z(t) for 3-D)",
+    expr_c   = ui.TextInput(label="Expression C",
                              placeholder="e.g. x  or  t/(2*pi)",
                              required=False, max_length=300)
-    domain_x = ui.TextInput(label="x / t / θ range  (min, max)",
+    domain_x = ui.TextInput(label="x / t / theta range  (min, max)",
                              placeholder="-10, 10",
                              required=False, max_length=40)
     domain_y = ui.TextInput(label="y range  (ignored for 1-D / parametric / polar)",
@@ -502,47 +483,107 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
         self._view = view
 
         pt = cfg.plot_type
+
+        # Set context-specific labels and defaults per plot type
         if pt == "function":
+            self.expr_a._underlying.label = "f(x) — expression in x"
+            self.expr_a.placeholder = "sin(x)  or  x**2 - 1  or  exp(-x)"
             self.expr_a.default = cfg.expr_main
-        elif pt in ("contour", "surface", "wireframe", "heatmap", "implicit", "inequality"):
+            self.expr_b._underlying.label = "— unused"
+            self.expr_c._underlying.label = "— unused"
+
+        elif pt in ("contour", "surface", "wireframe", "heatmap"):
+            self.expr_a._underlying.label = "f(x,y) — expression in x and y"
+            self.expr_a.placeholder = "sin(x)*cos(y)  or  x**2 + y**2"
             self.expr_a.default = cfg.expr_main
-            if pt == "implicit":
-                self.expr_b.default = str(cfg.implicit_rhs)
-            elif pt == "inequality":
-                self.expr_b.default = cfg.inequality_op
-                self.expr_c.default = str(cfg.implicit_rhs)
+            self.expr_b._underlying.label = "— unused"
+            self.expr_c._underlying.label = "— unused"
+
+        elif pt == "implicit":
+            self.expr_a._underlying.label = "f(x,y) — left-hand side"
+            self.expr_a.placeholder = "x**2 + y**2  or  x*sin(y)"
+            self.expr_a.default = cfg.expr_main
+            self.expr_b._underlying.label = "RHS constant  (f(x,y) = ?)"
+            self.expr_b.placeholder = "0.0"
+            self.expr_b.default = str(cfg.implicit_rhs)
+            self.expr_c._underlying.label = "— unused"
+
+        elif pt == "inequality":
+            self.expr_a._underlying.label = "f(x,y) — left-hand side"
+            self.expr_a.placeholder = "x**2 + y**2"
+            self.expr_a.default = cfg.expr_main
+            self.expr_b._underlying.label = "Operator  (<  <=  >  >=)"
+            self.expr_b.placeholder = "<="
+            self.expr_b.default = cfg.inequality_op
+            self.expr_c._underlying.label = "RHS constant"
+            self.expr_c.placeholder = "1.0"
+            self.expr_c.default = str(cfg.implicit_rhs)
+
         elif pt == "vector-field":
+            self.expr_a._underlying.label = "u(x,y) — horizontal component"
+            self.expr_a.placeholder = "-y  or  sin(x)"
             self.expr_a.default = cfg.expr_u
+            self.expr_b._underlying.label = "v(x,y) — vertical component"
+            self.expr_b.placeholder = "x  or  cos(y)"
             self.expr_b.default = cfg.expr_v
+            self.expr_c._underlying.label = "— unused"
+
         elif pt == "parametric-2d":
+            self.expr_a._underlying.label = "x(t) — horizontal"
+            self.expr_a.placeholder = "cos(t)  or  t*sin(t)"
             self.expr_a.default = cfg.expr_x
+            self.expr_b._underlying.label = "y(t) — vertical"
+            self.expr_b.placeholder = "sin(t)  or  t*cos(t)"
             self.expr_b.default = cfg.expr_y
+            self.expr_c._underlying.label = "— unused"
+
         elif pt == "parametric-3d":
+            self.expr_a._underlying.label = "x(t)"
+            self.expr_a.placeholder = "cos(t)"
             self.expr_a.default = cfg.expr_x
+            self.expr_b._underlying.label = "y(t)"
+            self.expr_b.placeholder = "sin(t)"
             self.expr_b.default = cfg.expr_y
+            self.expr_c._underlying.label = "z(t)"
+            self.expr_c.placeholder = "t / (2*pi)"
             self.expr_c.default = cfg.expr_z
-        elif pt in ("scatter", "scatter-3d", "errorbar"):
+
+        elif pt in ("scatter", "scatter-3d"):
+            self.expr_a._underlying.label = "xs — comma-separated x values"
+            self.expr_a.placeholder = "1, 2, 3, 4, 5"
             self.expr_a.default = cfg.scatter_xs
+            self.expr_b._underlying.label = "ys — comma-separated y values"
+            self.expr_b.placeholder = "1, 4, 9, 16, 25"
             self.expr_b.default = cfg.scatter_ys
             if pt == "scatter-3d":
+                self.expr_c._underlying.label = "zs — comma-separated z values"
+                self.expr_c.placeholder = "0, 1, 0, 1, 0"
                 self.expr_c.default = cfg.scatter_zs
-            elif pt == "errorbar":
-                self.expr_c.default = cfg.expr_z
-        elif pt == "histogram":
-            self.expr_a.default = cfg.scatter_xs
-            self.expr_b.default = str(cfg.hist_bins)
-        elif pt == "boxplot":
-            self.expr_a.default = cfg.scatter_xs
-            self.expr_b.default = cfg.box_violin
+            else:
+                self.expr_c._underlying.label = "— unused"
 
         elif pt == "riemann":
+            self.expr_a._underlying.label = "f(x) — expression to integrate"
+            self.expr_a.placeholder = "sin(x)  or  x**2"
             self.expr_a.default = cfg.expr_main
+            self.expr_b._underlying.label = "n — number of rectangles"
+            self.expr_b.placeholder = "8"
             self.expr_b.default = str(cfg.riemann_n)
+            self.expr_c._underlying.label = "method — left | right | midpoint"
+            self.expr_c.placeholder = "left"
             self.expr_c.default = cfg.riemann_method
 
         elif pt == "polar":
+            self.expr_a._underlying.label = "r(theta) — radial expression"
+            self.expr_a.placeholder = "1 + cos(theta)  or  cos(3*theta)"
             self.expr_a.default = cfg.expr_main
+            self.expr_b._underlying.label = "theta symbol name  (default: theta)"
+            self.expr_b.placeholder = "theta"
             self.expr_b.default = cfg.theta_symbol
+            self.expr_c._underlying.label = "— unused"
+
+        else:
+            self.expr_a.default = cfg.expr_main
 
         if pt in ("parametric-2d", "parametric-3d", "polar"):
             self.domain_x.default = f"{cfg.t_min}, {cfg.t_max}"
@@ -560,15 +601,17 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
 
         if pt == "function":
             if a: cfg.expr_main = a
-        elif pt in ("contour", "surface", "wireframe", "heatmap", "implicit", "inequality"):
+        elif pt in ("contour", "surface", "wireframe", "heatmap"):
             if a: cfg.expr_main = a
-            if pt == "implicit" and b:
-                cfg.implicit_rhs = _parse_float(b, cfg.implicit_rhs)
-            elif pt == "inequality":
-                if b in ("<", "<=", ">", ">="):
-                    cfg.inequality_op = b
-                if c:
-                    cfg.implicit_rhs = _parse_float(c, cfg.implicit_rhs)
+        elif pt == "implicit":
+            if a: cfg.expr_main = a
+            if b: cfg.implicit_rhs = _parse_float(b, cfg.implicit_rhs)
+        elif pt == "inequality":
+            if a: cfg.expr_main = a
+            if b in ("<", "<=", ">", ">="):
+                cfg.inequality_op = b
+            if c:
+                cfg.implicit_rhs = _parse_float(c, cfg.implicit_rhs)
         elif pt == "vector-field":
             if a: cfg.expr_u = a
             if b: cfg.expr_v = b
@@ -579,24 +622,16 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
             if a: cfg.expr_x = a
             if b: cfg.expr_y = b
             if c: cfg.expr_z = c
-        elif pt in ("scatter", "scatter-3d", "errorbar"):
+        elif pt in ("scatter", "scatter-3d"):
             if a: cfg.scatter_xs = a
             if b: cfg.scatter_ys = b
-            if c and pt == "scatter-3d": cfg.scatter_zs = c
-            if c and pt == "errorbar": cfg.expr_z = c
-        elif pt == "histogram":
-            if a: cfg.scatter_xs = a
-            if b: cfg.hist_bins = max(1, min(500, _parse_int(b, cfg.hist_bins)))
-        elif pt == "boxplot":
-            if a: cfg.scatter_xs = a
-            if b and b.lower() in ("box", "violin"):
-                cfg.box_violin = b.lower()
+            if c and pt == "scatter-3d":
+                cfg.scatter_zs = c
         elif pt == "riemann":
             if a: cfg.expr_main = a
             if b: cfg.riemann_n = max(1, min(500, _parse_int(b, cfg.riemann_n)))
             if c and c.lower().strip() in ("left", "right", "midpoint"):
                 cfg.riemann_method = c.lower().strip()
-
         elif pt == "polar":
             if a: cfg.expr_main    = a
             if b: cfg.theta_symbol = b
@@ -619,61 +654,63 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
         await interaction.response.edit_message(embed=_config_embed(cfg), view=self._view)
 
 
-class AppearanceModal(ui.Modal, title="Appearance — Style, Colormap & Theme"):
-    line_style = ui.TextInput(
-        label="Colour, width, style, marker  (comma-separated)",
-        placeholder="#1f77b4, 2.0, solid, none",
-        required=False, max_length=80,
+class AppearanceModal(ui.Modal, title="Appearance — Line Style"):
+    line_color = ui.TextInput(
+        label="Line colour  (hex or name, e.g. #1f77b4, red)",
+        placeholder="#1f77b4", required=False, max_length=40,
     )
-    markersize = ui.TextInput(
-        label="Marker size  (float, e.g. 6.0)",
-        placeholder="6.0", required=False, max_length=10,
+    width_style = ui.TextInput(
+        label="Width & style  (e.g. 2.0, solid)",
+        placeholder="2.0, solid",
+        required=False, max_length=30,
+    )
+    marker_size = ui.TextInput(
+        label="Marker & size  (e.g. none, 6.0   or   o, 8.0)",
+        placeholder="none, 6.0", required=False, max_length=20,
     )
     alpha_field = ui.TextInput(
-        label="Opacity (alpha, 0.0-1.0)",
+        label="Opacity  (0.0 – 1.0)",
         placeholder="0.9", required=False, max_length=6,
     )
-    colormap = ui.TextInput(
-        label="Colormap  (e.g. viridis, plasma, coolwarm, jet)",
-        placeholder="viridis", required=False, max_length=30,
-    )
-    theme = ui.TextInput(
-        label="Theme  (default|dark|academic|cyberpunk|seaborn)",
-        placeholder="default", required=False, max_length=20,
+    dpi_field = ui.TextInput(
+        label="DPI  (72 – 300, default 150)",
+        placeholder="150", required=False, max_length=5,
     )
 
     def __init__(self, cfg: PlotConfig, view: "PlotEngineView") -> None:
         super().__init__()
         self._cfg  = cfg
         self._view = view
-        self.line_style.default  = f"{cfg.line_color}, {cfg.line_width}, {cfg.line_style}, {cfg.marker}"
-        self.markersize.default  = str(cfg.marker_size)
+        self.line_color.default  = cfg.line_color
+        self.width_style.default = f"{cfg.line_width}, {cfg.line_style}"
+        self.marker_size.default = f"{cfg.marker}, {cfg.marker_size}"
         self.alpha_field.default = str(cfg.alpha)
-        self.colormap.default    = cfg.colormap
-        self.theme.default       = cfg.theme
+        self.dpi_field.default   = str(cfg.dpi)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         cfg = self._cfg
 
-        if self.line_style.value.strip():
-            parts = [p.strip() for p in self.line_style.value.split(",")]
-            if len(parts) >= 1 and parts[0]:
-                cfg.line_color = parts[0]
-            if len(parts) >= 2 and parts[1]:
-                cfg.line_width = _parse_float(parts[1], cfg.line_width)
-            if len(parts) >= 3 and parts[2] and parts[2] in LINE_STYLES:
-                cfg.line_style = parts[2]
-            if len(parts) >= 4 and parts[3] and parts[3] in MARKERS:
-                cfg.marker = parts[3]
+        if self.line_color.value.strip():
+            cfg.line_color = self.line_color.value.strip()
 
-        if self.markersize.value:
-            cfg.marker_size = _parse_float(self.markersize.value, cfg.marker_size)
+        if self.width_style.value.strip():
+            parts = [p.strip() for p in self.width_style.value.split(",")]
+            if parts[0]:
+                cfg.line_width = _parse_float(parts[0], cfg.line_width)
+            if len(parts) > 1 and parts[1] in LINE_STYLES:
+                cfg.line_style = parts[1]
+
+        if self.marker_size.value.strip():
+            parts = [p.strip() for p in self.marker_size.value.split(",")]
+            if parts[0] in MARKERS:
+                cfg.marker = parts[0]
+            if len(parts) > 1:
+                cfg.marker_size = _parse_float(parts[1], cfg.marker_size)
+
         if self.alpha_field.value:
             cfg.alpha = max(0.0, min(1.0, _parse_float(self.alpha_field.value, cfg.alpha)))
-        if self.colormap.value:
-            cfg.colormap = self.colormap.value.strip()
-        if self.theme.value and self.theme.value.strip() in THEMES:
-            cfg.theme = self.theme.value.strip()
+        if self.dpi_field.value:
+            cfg.dpi = max(72, min(300, _parse_int(self.dpi_field.value, cfg.dpi)))
 
         cfg.last_error = ""
         await interaction.response.edit_message(embed=_config_embed(cfg), view=self._view)
@@ -734,46 +771,37 @@ class AxesModal(ui.Modal, title="Axes, Labels & Scale"):
 
 
 class AdvancedModal(ui.Modal, title="Advanced Options"):
-    cmap       = ui.TextInput(label="Colormap",
-                               placeholder="viridis", required=False, max_length=30)
-    alpha_lvl  = ui.TextInput(
-        label="Opacity & contour levels  (alpha, levels)",
-        placeholder="0.9, 20", required=False, max_length=15,
+    levels_field = ui.TextInput(
+        label="Contour levels  (2 – 100, contour plots only)",
+        placeholder="20", required=False, max_length=5,
     )
     res_1d     = ui.TextInput(
-        label="1-D resolution  (line / parametric, 100–2000)",
+        label="1-D resolution  (line / parametric, 100 – 2000)",
         placeholder="800", required=False, max_length=6,
     )
     res_2d     = ui.TextInput(
-        label="2-D resolution  (contour / surface, 40–400)",
+        label="2-D resolution  (contour / surface, 40 – 400)",
         placeholder="120", required=False, max_length=6,
     )
-    figsize    = ui.TextInput(label="Figure size  (width, height) in inches",
-                               placeholder="8, 5", required=False, max_length=15)
+    figsize    = ui.TextInput(
+        label="Figure size  (width, height in inches)",
+        placeholder="8, 5", required=False, max_length=15,
+    )
 
     def __init__(self, cfg: PlotConfig, view: "PlotEngineView") -> None:
         super().__init__()
         self._cfg  = cfg
         self._view = view
-        self.cmap.default      = cfg.colormap
-        self.alpha_lvl.default = f"{cfg.alpha}, {cfg.levels}"
-        self.res_1d.default    = str(cfg.resolution_1d)
-        self.res_2d.default    = str(cfg.resolution_2d)
-        self.figsize.default   = f"{cfg.fig_width}, {cfg.fig_height}"
+        self.levels_field.default = str(cfg.levels)
+        self.res_1d.default       = str(cfg.resolution_1d)
+        self.res_2d.default       = str(cfg.resolution_2d)
+        self.figsize.default      = f"{cfg.fig_width}, {cfg.fig_height}"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         cfg = self._cfg
 
-        if self.cmap.value:
-            cfg.colormap = self.cmap.value.strip()
-
-        if self.alpha_lvl.value:
-            parts = [p.strip() for p in self.alpha_lvl.value.split(",")]
-            if parts[0]:
-                cfg.alpha  = max(0.0, min(1.0, _parse_float(parts[0], cfg.alpha)))
-            if len(parts) > 1 and parts[1]:
-                cfg.levels = max(2, min(100, _parse_int(parts[1], cfg.levels)))
-
+        if self.levels_field.value:
+            cfg.levels = max(2, min(100, _parse_int(self.levels_field.value, cfg.levels)))
         if self.res_1d.value:
             cfg.resolution_1d = max(100, min(2000, _parse_int(self.res_1d.value, cfg.resolution_1d)))
         if self.res_2d.value:
@@ -1026,39 +1054,6 @@ async def _render(cfg: PlotConfig) -> discord.File:
             style=style,
         )
 
-    elif pt == "histogram":
-        values = _parse_floatlist(cfg.scatter_xs)
-        return await plot_histogram(
-            values,
-            bins=cfg.hist_bins,
-            title=cfg.title,
-            xlabel=cfg.xlabel or "value",
-            ylabel=cfg.ylabel or "count",
-            style=style,
-        )
-
-    elif pt == "errorbar":
-        xs_list = _parse_floatlist(cfg.scatter_xs)
-        ys_list = _parse_floatlist(cfg.scatter_ys)
-        err_list = _parse_floatlist(cfg.expr_z)
-        return await plot_errorbar(
-            xs_list, ys_list, err_list,
-            title=cfg.title,
-            xlabel=cfg.xlabel,
-            ylabel=cfg.ylabel,
-            style=style,
-        )
-
-    elif pt == "boxplot":
-        groups = [_parse_floatlist(group) for group in cfg.scatter_xs.split("|")]
-        return await plot_boxplot(
-            groups,
-            mode=cfg.box_violin,
-            title=cfg.title,
-            ylabel=cfg.ylabel or "value",
-            style=style,
-        )
-
     elif pt == "riemann":
         expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x)
         return await plot_riemann(
@@ -1106,7 +1101,16 @@ class PlotEngineView(ui.View):
         super().__init__(timeout=600)
         self.cfg = cfg
         self._message: Optional[discord.Message] = None
+
+    def _rebuild_all_items(self) -> None:
+        """Clear and fully rebuild all rows after any config change."""
+        self.clear_items()
         self._add_type_select()
+        self._add_theme_select()
+        self._add_colormap_select()
+        self._add_buttons()
+
+    # ── Row 0: plot type ─────────────────────────────────────────────────────
 
     def _add_type_select(self) -> None:
         options = [
@@ -1118,125 +1122,93 @@ class PlotEngineView(ui.View):
             )
             for pt in PLOT_TYPES
         ]
-        select = ui.Select(placeholder="Choose plot type…", options=options, row=0)
+        select = ui.Select(placeholder="Plot type…", options=options, row=0)
         select.callback = self._on_type_select
         self.add_item(select)
 
     async def _on_type_select(self, interaction: discord.Interaction) -> None:
         self.cfg.plot_type  = interaction.data["values"][0]
         self.cfg.last_error = ""
-        self.clear_items()
-        self._add_type_select()
-        self._add_buttons()
+        self._rebuild_all_items()
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
 
+    # ── Row 1: theme dropdown ────────────────────────────────────────────────
+
+    def _add_theme_select(self) -> None:
+        options = [
+            discord.SelectOption(
+                label=t,
+                value=t,
+                default=(t == self.cfg.theme),
+            )
+            for t in THEMES
+        ]
+        sel = ui.Select(
+            placeholder=f"Theme: {self.cfg.theme}",
+            options=options,
+            row=1,
+        )
+        sel.callback = self._on_theme_select
+        self.add_item(sel)
+
+    async def _on_theme_select(self, interaction: discord.Interaction) -> None:
+        self.cfg.theme = interaction.data["values"][0]
+        self.cfg.last_error = ""
+        self._rebuild_all_items()
+        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+
+    # ── Row 2: colormap dropdown ─────────────────────────────────────────────
+
+    def _add_colormap_select(self) -> None:
+        options = [
+            discord.SelectOption(
+                label=c,
+                value=c,
+                default=(c == self.cfg.colormap),
+            )
+            for c in COLORMAPS
+        ]
+        sel = ui.Select(
+            placeholder=f"Colormap: {self.cfg.colormap}",
+            options=options,
+            row=2,
+        )
+        sel.callback = self._on_colormap_select
+        self.add_item(sel)
+
+    async def _on_colormap_select(self, interaction: discord.Interaction) -> None:
+        self.cfg.colormap = interaction.data["values"][0]
+        self.cfg.last_error = ""
+        self._rebuild_all_items()
+        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+
+    # ── Rows 3–4: action buttons ─────────────────────────────────────────────
+
     def _add_buttons(self) -> None:
-        def _btn(label, style, row, cb, *, emoji=None):
-            b = ui.Button(label=label, style=style, row=row, emoji=emoji)
+        def _btn(label, style, row, cb):
+            b = ui.Button(label=label, style=style, row=row)
             b.callback = cb
             self.add_item(b)
 
-        _btn("Expressions",   discord.ButtonStyle.primary,   1, self._on_expr)
-        _btn("Appearance",    discord.ButtonStyle.primary,   1, self._on_appearance)
-        _btn("Axes & Labels", discord.ButtonStyle.primary,   1, self._on_axes)
-        _btn("Advanced",      discord.ButtonStyle.secondary, 1, self._on_advanced)
-        _btn("Fill",          discord.ButtonStyle.secondary, 1, self._on_fill)
+        # Row 3 — expression / style editors
+        _btn("Expressions",   discord.ButtonStyle.primary,   3, self._on_expr)
+        _btn("Appearance",    discord.ButtonStyle.primary,   3, self._on_appearance)
+        _btn("Axes & Labels", discord.ButtonStyle.primary,   3, self._on_axes)
+        _btn("Advanced",      discord.ButtonStyle.secondary, 3, self._on_advanced)
+        _btn("Fill",          discord.ButtonStyle.secondary, 3, self._on_fill)
 
-        _btn("🔍+", discord.ButtonStyle.secondary, 2, self._on_zoom_in)
-        _btn("🔍-", discord.ButtonStyle.secondary, 2, self._on_zoom_out)
-        _btn("⬅️",  discord.ButtonStyle.secondary, 2, self._on_pan_left)
-        _btn("➡️",  discord.ButtonStyle.secondary, 2, self._on_pan_right)
-        _btn("⬆️",  discord.ButtonStyle.secondary, 2, self._on_pan_up)
-
-        _btn("⬇️",           discord.ButtonStyle.secondary, 3, self._on_pan_down)
-        _btn("Limits",       discord.ButtonStyle.secondary, 3, self._on_limits)
-        _btn("Syntax Help",  discord.ButtonStyle.secondary, 3, self._on_syntax_help)
-
-        _btn("Reset View",  discord.ButtonStyle.danger,   4, self._on_reset_view)
+        # Row 4 — actions (type-dependent)
+        _btn("Limits",      discord.ButtonStyle.secondary, 4, self._on_limits)
         _btn("Export",      discord.ButtonStyle.secondary, 4, self._on_export)
-        _btn("Render plot", discord.ButtonStyle.success,  4, self._on_render)
 
         if self.cfg.plot_type == "vector-field":
-            # Row 4: Reset View · Export · Render · Stream toggle · Reset
-            # Animate is omitted here to keep the row within Discord's 5-item limit;
-            # vector-field animation is still reachable via /plot with another type.
             stream_label = "Stream: ON" if self.cfg.stream else "Stream: OFF"
             _btn(stream_label, discord.ButtonStyle.primary, 4, self._on_stream)
         elif self.cfg.plot_type not in ("scatter", "scatter-3d"):
-            _btn("Animate",  discord.ButtonStyle.success, 4, self._on_animate)
-        _btn("Reset",        discord.ButtonStyle.danger,  4, self._on_reset)
+            _btn("Animate", discord.ButtonStyle.success, 4, self._on_animate)
 
-    def _scale_domain(self, factor: float) -> None:
-        dx = (self.cfg.x_max - self.cfg.x_min) * factor
-        cx = (self.cfg.x_max + self.cfg.x_min) / 2
-        self.cfg.x_min = cx - dx / 2
-        self.cfg.x_max = cx + dx / 2
-
-        dy = (self.cfg.y_max - self.cfg.y_min) * factor
-        cy = (self.cfg.y_max + self.cfg.y_min) / 2
-        self.cfg.y_min = cy - dy / 2
-        self.cfg.y_max = cy + dy / 2
-
-        if self.cfg.plot_type in ("parametric-2d", "parametric-3d"):
-            dt = (self.cfg.t_max - self.cfg.t_min) * factor
-            ct = (self.cfg.t_max + self.cfg.t_min) / 2
-            self.cfg.t_min = max(0.0, ct - dt / 2)
-            self.cfg.t_max = ct + dt / 2
-        elif self.cfg.plot_type == "polar":
-            dt = (self.cfg.t_max - self.cfg.t_min) * factor
-            ct = (self.cfg.t_max + self.cfg.t_min) / 2
-            self.cfg.t_min = ct - dt / 2
-            self.cfg.t_max = ct + dt / 2
-
-    def _shift_domain(self, x_frac: float, y_frac: float) -> None:
-        """Shift by a fraction of the *current* domain width/height so pan
-        step stays proportional after any number of zooms."""
-        dx = (self.cfg.x_max - self.cfg.x_min) * x_frac
-        self.cfg.x_min += dx
-        self.cfg.x_max += dx
-
-        dy = (self.cfg.y_max - self.cfg.y_min) * y_frac
-        self.cfg.y_min += dy
-        self.cfg.y_max += dy
-
-    async def _on_zoom_in(self, interaction: discord.Interaction) -> None:
-        self._scale_domain(0.8)
-        await self._on_preview(interaction)
-
-    async def _on_zoom_out(self, interaction: discord.Interaction) -> None:
-        self._scale_domain(1.25)
-        await self._on_preview(interaction)
-
-    async def _on_pan_left(self, interaction: discord.Interaction) -> None:
-        self._shift_domain(-0.25, 0)
-        await self._on_preview(interaction)
-
-    async def _on_pan_right(self, interaction: discord.Interaction) -> None:
-        self._shift_domain(0.25, 0)
-        await self._on_preview(interaction)
-
-    async def _on_pan_up(self, interaction: discord.Interaction) -> None:
-        self._shift_domain(0, 0.25)
-        await self._on_preview(interaction)
-
-    async def _on_pan_down(self, interaction: discord.Interaction) -> None:
-        self._shift_domain(0, -0.25)
-        await self._on_preview(interaction)
-
-    async def _on_reset_view(self, interaction: discord.Interaction) -> None:
-        defaults = PlotConfig()
-        self.cfg.x_min = defaults.x_min
-        self.cfg.x_max = defaults.x_max
-        self.cfg.y_min = defaults.y_min
-        self.cfg.y_max = defaults.y_max
-        self.cfg.t_min = defaults.t_min
-        self.cfg.t_max = defaults.t_max
-        self.cfg.x_lim_min = None
-        self.cfg.x_lim_max = None
-        self.cfg.y_lim_min = None
-        self.cfg.y_lim_max = None
-        self.cfg.last_error = ""
-        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+        _btn("Render",  discord.ButtonStyle.success, 4, self._on_render)
+        _btn("Reset",   discord.ButtonStyle.danger,  4, self._on_reset)
 
     async def _on_expr(self,     interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(ExpressionModal(self.cfg, self))
@@ -1258,9 +1230,7 @@ class PlotEngineView(ui.View):
 
     async def _on_stream(self, interaction: discord.Interaction) -> None:
         self.cfg.stream = not self.cfg.stream
-        self.clear_items()
-        self._add_type_select()
-        self._add_buttons()
+        self._rebuild_all_items()
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
 
     async def _on_syntax_help(self, interaction: discord.Interaction) -> None:
@@ -1340,39 +1310,31 @@ class PlotEngineView(ui.View):
             embed.add_field(name="x(t)", value=f"`{cfg.expr_x}`", inline=True)
             embed.add_field(name="y(t)", value=f"`{cfg.expr_y}`", inline=True)
             embed.add_field(name="z(t)", value=f"`{cfg.expr_z}`", inline=True)
-        elif pt in ("scatter", "scatter-3d", "errorbar"):
+        elif pt in ("scatter", "scatter-3d"):
             embed.add_field(name="xs", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
             embed.add_field(name="ys", value=f"`{cfg.scatter_ys[:80]}`", inline=False)
             if pt == "scatter-3d":
                 embed.add_field(name="zs", value=f"`{cfg.scatter_zs[:80]}`", inline=False)
-            elif pt == "errorbar":
-                embed.add_field(name="y errors", value=f"`{cfg.expr_z[:80]}`", inline=False)
-        elif pt == "histogram":
-            embed.add_field(name="data", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
-            embed.add_field(name="bins", value=f"`{cfg.hist_bins}`", inline=True)
-        elif pt == "boxplot":
-            embed.add_field(name="groups", value=f"`{cfg.scatter_xs[:80]}`", inline=False)
-            embed.add_field(name="mode", value=f"`{cfg.box_violin}`", inline=True)
         elif pt == "polar":
             all_polar = [cfg.expr_main] + list(cfg.additional_exprs)
             embed.add_field(
-                name="r(θ) expressions",
+                name="r(theta) expressions",
                 value="\n".join(f"`{e}`" for e in all_polar),
                 inline=False,
             )
-            embed.add_field(name="θ symbol", value=f"`{cfg.theta_symbol}`", inline=True)
+            embed.add_field(name="theta symbol", value=f"`{cfg.theta_symbol}`", inline=True)
 
         if pt in ("parametric-2d", "parametric-3d", "polar"):
             embed.add_field(
                 name="Domain",
-                value=f"θ/t ∈ [{cfg.t_min}, {cfg.t_max}]" if pt == "polar"
-                      else f"t ∈ [{cfg.t_min}, {cfg.t_max}]",
+                value=f"theta/t in [{cfg.t_min}, {cfg.t_max}]" if pt == "polar"
+                      else f"t in [{cfg.t_min}, {cfg.t_max}]",
                 inline=False,
             )
-        elif pt not in ("scatter", "scatter-3d", "errorbar", "histogram", "boxplot", "polar"):
-            domain_lines = [f"x ∈ [{cfg.x_min}, {cfg.x_max}]"]
+        elif pt not in ("scatter", "scatter-3d", "polar"):
+            domain_lines = [f"x in [{cfg.x_min}, {cfg.x_max}]"]
             if pt not in ("function",):
-                domain_lines.append(f"y ∈ [{cfg.y_min}, {cfg.y_max}]")
+                domain_lines.append(f"y in [{cfg.y_min}, {cfg.y_max}]")
             embed.add_field(name="Domain", value="\n".join(domain_lines), inline=False)
 
         embed.add_field(
@@ -1396,7 +1358,7 @@ class PlotEngineView(ui.View):
         )
 
         embed.add_field(
-            name="Axes (Phase 1)",
+            name="Axes",
             value=(
                 f"log scale `{_log_label(cfg)}`\n"
                 f"grid `{'yes' if cfg.show_grid else 'no'}`\n"
@@ -1428,14 +1390,6 @@ class PlotEngineView(ui.View):
 
         embed.set_footer(text="Settings are ephemeral — only you can see this message.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    async def _on_theme(self, interaction: discord.Interaction) -> None:
-        # Legacy — kept for any external callers; routes to AppearanceModal.
-        await interaction.response.send_modal(AppearanceModal(self.cfg, self))
-
-    async def _on_cmap(self, interaction: discord.Interaction) -> None:
-        # Legacy — kept for any external callers; routes to AppearanceModal.
-        await interaction.response.send_modal(AppearanceModal(self.cfg, self))
 
     async def _on_preview(self, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
@@ -1479,7 +1433,7 @@ class PlotEngineView(ui.View):
         await interaction.channel.send(embed=embed_out, file=file)
 
     async def _on_render(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         try:
             file = await _render(self.cfg)
             self.cfg.last_error = ""
@@ -1518,9 +1472,7 @@ class PlotEngineView(ui.View):
             if k not in keep:
                 setattr(self.cfg, k, v)
         self.cfg.last_error = ""
-        self.clear_items()
-        self._add_type_select()
-        self._add_buttons()
+        self._rebuild_all_items()
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
 
     async def on_timeout(self) -> None:
@@ -1535,89 +1487,6 @@ class PlotEngineView(ui.View):
             await self._message.edit(embed=expired_embed, view=self)
         except Exception:
             pass  # message may already be gone
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Theme picker — secondary ephemeral view
-# ─────────────────────────────────────────────────────────────────────────────
-
-THEMES = ["default", "dark", "academic", "cyberpunk", "seaborn"]
-
-class ThemePickerView(ui.View):
-    def __init__(self, cfg: PlotConfig, parent: PlotEngineView) -> None:
-        super().__init__(timeout=180)
-        self._cfg = cfg
-        self._parent = parent
-        self._build()
-
-    def _build(self) -> None:
-        options = [
-            discord.SelectOption(label=t, value=t, default=(t == self._cfg.theme))
-            for t in THEMES
-        ]
-        sel = ui.Select(placeholder="Pick a theme…", options=options)
-        sel.callback = self._on_pick
-        self.add_item(sel)
-
-    async def _on_pick(self, interaction: discord.Interaction) -> None:
-        self._cfg.theme = interaction.data["values"][0]
-        self._parent.clear_items()
-        self._parent._add_type_select()
-        self._parent._add_buttons()
-        await interaction.response.edit_message(embed=_config_embed(self._cfg), view=self._parent)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Colormap picker — secondary ephemeral view
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ColormapPickerView(ui.View):
-    PAGE_SIZE = 25
-
-    def __init__(self, cfg: PlotConfig, parent: PlotEngineView) -> None:
-        super().__init__(timeout=120)
-        self._cfg    = cfg
-        self._parent = parent
-        self._page   = 0
-        self._build()
-
-    def _build(self) -> None:
-        self.clear_items()
-        start = self._page * self.PAGE_SIZE
-        chunk = COLORMAPS[start: start + self.PAGE_SIZE]
-        options = [
-            discord.SelectOption(label=c, value=c, default=(c == self._cfg.colormap))
-            for c in chunk
-        ]
-        sel = ui.Select(placeholder="Pick a colormap…", options=options)
-        sel.callback = self._on_pick
-        self.add_item(sel)
-
-        if start > 0:
-            btn = ui.Button(label="< Prev", style=discord.ButtonStyle.secondary, row=1)
-            btn.callback = self._on_prev
-            self.add_item(btn)
-        if start + self.PAGE_SIZE < len(COLORMAPS):
-            btn = ui.Button(label="Next >", style=discord.ButtonStyle.secondary, row=1)
-            btn.callback = self._on_next
-            self.add_item(btn)
-
-    async def _on_pick(self, interaction: discord.Interaction) -> None:
-        self._cfg.colormap = interaction.data["values"][0]
-        self._parent.clear_items()
-        self._parent._add_type_select()
-        self._parent._add_buttons()
-        await interaction.response.edit_message(embed=_config_embed(self._cfg), view=self._parent)
-
-    async def _on_prev(self, interaction: discord.Interaction) -> None:
-        self._page -= 1
-        self._build()
-        await interaction.response.edit_message(view=self)
-
-    async def _on_next(self, interaction: discord.Interaction) -> None:
-        self._page += 1
-        self._build()
-        await interaction.response.edit_message(view=self)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1640,7 +1509,7 @@ class PlotEngine(commands.Cog):
             return
 
         view = PlotEngineView(cfg)
-        view._add_buttons()
+        view._rebuild_all_items()
 
         await interaction.response.send_message(
             embed=_config_embed(cfg),
@@ -1672,7 +1541,7 @@ class PlotEngine(commands.Cog):
             cfg.expr_x    = quick_expr
 
         view = PlotEngineView(cfg)
-        view._add_buttons()
+        view._rebuild_all_items()
 
         await interaction.response.send_message(
             embed=_config_embed(cfg),
