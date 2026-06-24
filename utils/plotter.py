@@ -2059,6 +2059,104 @@ def _plot_animation_wireframe_blocking(
         return _save_animation_to_gif(fig, ani)
 
 
+def _plot_animation_polar_blocking(
+    expr,
+    theta_var,
+    anim_var,
+    theta_min,
+    theta_max,
+    title,
+    style,
+):
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        thetas = np.linspace(theta_min, theta_max, ANIM_PARAM_POINTS)
+        f = _lambdify2(expr, theta_var, anim_var)
+        a_vals = _anim_param_values()
+
+        all_r = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for a in a_vals:
+                r = np.asarray(f(thetas, a), dtype=float)
+                all_r.append(np.where(np.isfinite(r), r, np.nan))
+
+        fig = plt.figure(figsize=(style.fig_width, style.fig_height))
+        ax = fig.add_subplot(111, projection="polar")
+        (line,) = ax.plot([], [], color=style.color, linewidth=style.line_width,
+                          linestyle=style.line_style)
+        title_obj = ax.set_title("", fontsize=12, pad=14)
+        title_str = title or str(expr)
+        ax.grid(style.show_grid, alpha=0.3)
+
+        def draw(idx):
+            line.set_data(thetas, all_r[idx])
+            finite = all_r[idx][np.isfinite(all_r[idx])]
+            rmax = float(np.nanmax(np.abs(finite))) * 1.1 if finite.size else 1.0
+            ax.set_rmax(rmax or 1.0)
+            title_obj.set_text(
+                f"{_to_math_label(title_str)} ({anim_var}={a_vals[idx]:.2f})"
+            )
+
+        draw(0)
+
+        def update(frame_idx):
+            draw(frame_idx)
+            return [line]
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
+def _plot_animation_implicit_blocking(
+    expr,
+    x_var,
+    y_var,
+    anim_var,
+    x_range,
+    y_range,
+    rhs,
+    title,
+    style,
+):
+    with matplotlib.rc_context(rc=style.rc_overrides()):
+        n = min(ANIM_GRID_POINTS, 80)
+        X, Y = _meshgrid(x_range, y_range, n)
+        f = _lambdify3(expr, x_var, y_var, anim_var)
+        a_vals = _anim_param_values()
+
+        fig, ax = _white_fig(style)
+        title_str = title or f"{expr} = {rhs:g}"
+        title_obj = ax.set_title("", fontsize=12, pad=6)
+        ax.set_xlabel(_to_math_label(str(x_var)), fontsize=10)
+        ax.set_ylabel(_to_math_label(str(y_var)), fontsize=10)
+        ax.grid(style.show_grid, alpha=0.3)
+        ax.set_xlim(*x_range)
+        ax.set_ylim(*y_range)
+
+        def draw(idx):
+            ax.collections.clear()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                Z = np.asarray(f(X, Y, a_vals[idx]), dtype=float) - rhs
+            try:
+                ax.contour(X, Y, Z, levels=[0.0], colors=[style.color],
+                           linewidths=[style.line_width])
+            except Exception:
+                pass
+            title_obj.set_text(
+                f"{_to_math_label(title_str)} ({anim_var}={a_vals[idx]:.2f})"
+            )
+
+        draw(0)
+
+        def update(frame_idx):
+            draw(frame_idx)
+            return []
+
+        ani = FuncAnimation(fig, update, frames=ANIM_FRAMES, blit=False)
+        return _save_animation_to_gif(fig, ani)
+
+
 def _plot_animation_parametric_3d_blocking(
     x_expr: sympy.Expr,
     y_expr: sympy.Expr,
@@ -2186,6 +2284,24 @@ async def plot_animation(cfg) -> discord.File:
                 _plot_animation_parametric_3d_blocking,
                 xe, ye, ze, t, anim_var, cfg.t_min, cfg.t_max, cfg.title, style,
             )
+
+    elif pt == "polar":
+        theta_sym = sympy.Symbol(cfg.theta_symbol or "theta")
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), theta_sym, anim_var)
+        buf = await _run_blocking(
+            _plot_animation_polar_blocking,
+            expr, theta_sym, anim_var, cfg.t_min, cfg.t_max, cfg.title, style,
+        )
+
+    elif pt == "implicit":
+        x, y = sympy.Symbol("x"), sympy.Symbol("y")
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x, y, anim_var)
+        buf = await _run_blocking(
+            _plot_animation_implicit_blocking,
+            expr, x, y, anim_var,
+            (cfg.x_min, cfg.x_max), (cfg.y_min, cfg.y_max),
+            cfg.implicit_rhs, cfg.title, style,
+        )
 
     elif pt in ("scatter", "scatter-3d"):
         raise ValueError(

@@ -248,7 +248,19 @@ def _parse_bool(s: str, default: bool) -> bool:
 
 
 def _parse_floatlist(s: str) -> list[float]:
-    return [float(v.strip()) for v in s.split(",") if v.strip()]
+    result = []
+    for v in s.split(","):
+        v = v.strip()
+        if not v:
+            continue
+        try:
+            result.append(float(v))
+        except ValueError:
+            raise ValueError(
+                f"Could not parse `{v}` as a number. "
+                "Data fields expect comma-separated numbers, e.g. `1, 2.5, -3`."
+            )
+    return result
 
 
 def _parse_optional_float(s: str) -> Optional[float]:
@@ -523,6 +535,11 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
             self.expr_a.default = cfg.scatter_xs
             self.expr_b.default = cfg.box_violin
 
+        elif pt == "riemann":
+            self.expr_a.default = cfg.expr_main
+            self.expr_b.default = str(cfg.riemann_n)
+            self.expr_c.default = cfg.riemann_method
+
         elif pt == "polar":
             self.expr_a.default = cfg.expr_main
             self.expr_b.default = cfg.theta_symbol
@@ -574,6 +591,12 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
             if a: cfg.scatter_xs = a
             if b and b.lower() in ("box", "violin"):
                 cfg.box_violin = b.lower()
+        elif pt == "riemann":
+            if a: cfg.expr_main = a
+            if b: cfg.riemann_n = max(1, min(500, _parse_int(b, cfg.riemann_n)))
+            if c and c.lower().strip() in ("left", "right", "midpoint"):
+                cfg.riemann_method = c.lower().strip()
+
         elif pt == "polar":
             if a: cfg.expr_main    = a
             if b: cfg.theta_symbol = b
@@ -596,41 +619,62 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
         await interaction.response.edit_message(embed=_config_embed(cfg), view=self._view)
 
 
-class StyleModal(ui.Modal, title="Line & Marker Style"):
-    color      = ui.TextInput(label="Line / scatter colour  (hex or name)",
-                               placeholder="#1f77b4  or  red  or  steelblue",
-                               required=False, max_length=40)
-    width      = ui.TextInput(label="Line width  (float, e.g. 2.0)",
-                               placeholder="2.0", required=False, max_length=10)
-    style      = ui.TextInput(label="Line style (solid|dashed|dotted|dashdot)",
-                               placeholder="solid", required=False, max_length=10)
-    marker     = ui.TextInput(label="Marker (none|.|o|s|^|D|*|+|x)",
-                               placeholder="none", required=False, max_length=5)
-    markersize = ui.TextInput(label="Marker size  (float, e.g. 6.0)",
-                               placeholder="6.0", required=False, max_length=10)
+class AppearanceModal(ui.Modal, title="Appearance — Style, Colormap & Theme"):
+    line_style = ui.TextInput(
+        label="Colour, width, style, marker  (comma-separated)",
+        placeholder="#1f77b4, 2.0, solid, none",
+        required=False, max_length=80,
+    )
+    markersize = ui.TextInput(
+        label="Marker size  (float, e.g. 6.0)",
+        placeholder="6.0", required=False, max_length=10,
+    )
+    alpha_field = ui.TextInput(
+        label="Opacity (alpha, 0.0-1.0)",
+        placeholder="0.9", required=False, max_length=6,
+    )
+    colormap = ui.TextInput(
+        label="Colormap  (e.g. viridis, plasma, coolwarm, jet)",
+        placeholder="viridis", required=False, max_length=30,
+    )
+    theme = ui.TextInput(
+        label="Theme  (default|dark|academic|cyberpunk|seaborn)",
+        placeholder="default", required=False, max_length=20,
+    )
 
     def __init__(self, cfg: PlotConfig, view: "PlotEngineView") -> None:
         super().__init__()
         self._cfg  = cfg
         self._view = view
-        self.color.default      = cfg.line_color
-        self.width.default      = str(cfg.line_width)
-        self.style.default      = cfg.line_style
-        self.marker.default     = cfg.marker
-        self.markersize.default = str(cfg.marker_size)
+        self.line_style.default  = f"{cfg.line_color}, {cfg.line_width}, {cfg.line_style}, {cfg.marker}"
+        self.markersize.default  = str(cfg.marker_size)
+        self.alpha_field.default = str(cfg.alpha)
+        self.colormap.default    = cfg.colormap
+        self.theme.default       = cfg.theme
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         cfg = self._cfg
-        if self.color.value:
-            cfg.line_color  = self.color.value.strip()
-        if self.width.value:
-            cfg.line_width  = _parse_float(self.width.value, cfg.line_width)
-        if self.style.value and self.style.value.strip() in LINE_STYLES:
-            cfg.line_style  = self.style.value.strip()
-        if self.marker.value and self.marker.value.strip() in MARKERS:
-            cfg.marker      = self.marker.value.strip()
+
+        if self.line_style.value.strip():
+            parts = [p.strip() for p in self.line_style.value.split(",")]
+            if len(parts) >= 1 and parts[0]:
+                cfg.line_color = parts[0]
+            if len(parts) >= 2 and parts[1]:
+                cfg.line_width = _parse_float(parts[1], cfg.line_width)
+            if len(parts) >= 3 and parts[2] and parts[2] in LINE_STYLES:
+                cfg.line_style = parts[2]
+            if len(parts) >= 4 and parts[3] and parts[3] in MARKERS:
+                cfg.marker = parts[3]
+
         if self.markersize.value:
             cfg.marker_size = _parse_float(self.markersize.value, cfg.marker_size)
+        if self.alpha_field.value:
+            cfg.alpha = max(0.0, min(1.0, _parse_float(self.alpha_field.value, cfg.alpha)))
+        if self.colormap.value:
+            cfg.colormap = self.colormap.value.strip()
+        if self.theme.value and self.theme.value.strip() in THEMES:
+            cfg.theme = self.theme.value.strip()
+
         cfg.last_error = ""
         await interaction.response.edit_message(embed=_config_embed(cfg), view=self._view)
 
@@ -1015,6 +1059,19 @@ async def _render(cfg: PlotConfig) -> discord.File:
             style=style,
         )
 
+    elif pt == "riemann":
+        expr = _sympy_expr(_clean_sympy_expr(cfg.expr_main), x)
+        return await plot_riemann(
+            expr, x,
+            a=cfg.x_min,
+            b=cfg.x_max,
+            n=cfg.riemann_n,
+            method=cfg.riemann_method,
+            title=cfg.title,
+            style=style,
+            resolution_1d=cfg.resolution_1d,
+        )
+
     elif pt == "polar":
         theta_sym  = sympy.Symbol(cfg.theta_symbol or "theta")
         expr       = _sympy_expr(_clean_sympy_expr(cfg.expr_main), theta_sym)
@@ -1048,6 +1105,7 @@ class PlotEngineView(ui.View):
     def __init__(self, cfg: PlotConfig) -> None:
         super().__init__(timeout=600)
         self.cfg = cfg
+        self._message: Optional[discord.Message] = None
         self._add_type_select()
 
     def _add_type_select(self) -> None:
@@ -1079,10 +1137,10 @@ class PlotEngineView(ui.View):
             self.add_item(b)
 
         _btn("Expressions",   discord.ButtonStyle.primary,   1, self._on_expr)
-        _btn("Style",         discord.ButtonStyle.primary,   1, self._on_style)
+        _btn("Appearance",    discord.ButtonStyle.primary,   1, self._on_appearance)
         _btn("Axes & Labels", discord.ButtonStyle.primary,   1, self._on_axes)
         _btn("Advanced",      discord.ButtonStyle.secondary, 1, self._on_advanced)
-        _btn("Theme",         discord.ButtonStyle.secondary, 1, self._on_theme)
+        _btn("Fill",          discord.ButtonStyle.secondary, 1, self._on_fill)
 
         _btn("🔍+", discord.ButtonStyle.secondary, 2, self._on_zoom_in)
         _btn("🔍-", discord.ButtonStyle.secondary, 2, self._on_zoom_out)
@@ -1091,8 +1149,6 @@ class PlotEngineView(ui.View):
         _btn("⬆️",  discord.ButtonStyle.secondary, 2, self._on_pan_up)
 
         _btn("⬇️",           discord.ButtonStyle.secondary, 3, self._on_pan_down)
-        _btn("Colormap",     discord.ButtonStyle.secondary, 3, self._on_cmap)
-        _btn("Fill",         discord.ButtonStyle.secondary, 3, self._on_fill)
         _btn("Limits",       discord.ButtonStyle.secondary, 3, self._on_limits)
         _btn("Syntax Help",  discord.ButtonStyle.secondary, 3, self._on_syntax_help)
 
@@ -1100,16 +1156,15 @@ class PlotEngineView(ui.View):
         _btn("Export",      discord.ButtonStyle.secondary, 4, self._on_export)
         _btn("Render plot", discord.ButtonStyle.success,  4, self._on_render)
 
-        if self.cfg.plot_type not in ("scatter", "scatter-3d"):
+        if self.cfg.plot_type == "vector-field":
+            # Row 4: Reset View · Export · Render · Stream toggle · Reset
+            # Animate is omitted here to keep the row within Discord's 5-item limit;
+            # vector-field animation is still reachable via /plot with another type.
+            stream_label = "Stream: ON" if self.cfg.stream else "Stream: OFF"
+            _btn(stream_label, discord.ButtonStyle.primary, 4, self._on_stream)
+        elif self.cfg.plot_type not in ("scatter", "scatter-3d"):
             _btn("Animate",  discord.ButtonStyle.success, 4, self._on_animate)
         _btn("Reset",        discord.ButtonStyle.danger,  4, self._on_reset)
-
-        if self.cfg.plot_type == "function":
-            pass  # + f(x) functionality lives in AdditionalExprModal
-        elif self.cfg.plot_type == "vector-field":
-            pass
-        elif self.cfg.plot_type in ("scatter", "scatter-3d"):
-            pass
 
     def _scale_domain(self, factor: float) -> None:
         dx = (self.cfg.x_max - self.cfg.x_min) * factor
@@ -1133,12 +1188,14 @@ class PlotEngineView(ui.View):
             self.cfg.t_min = ct - dt / 2
             self.cfg.t_max = ct + dt / 2
 
-    def _shift_domain(self, x_shift: float, y_shift: float) -> None:
-        dx = (self.cfg.x_max - self.cfg.x_min) * x_shift
+    def _shift_domain(self, x_frac: float, y_frac: float) -> None:
+        """Shift by a fraction of the *current* domain width/height so pan
+        step stays proportional after any number of zooms."""
+        dx = (self.cfg.x_max - self.cfg.x_min) * x_frac
         self.cfg.x_min += dx
         self.cfg.x_max += dx
 
-        dy = (self.cfg.y_max - self.cfg.y_min) * y_shift
+        dy = (self.cfg.y_max - self.cfg.y_min) * y_frac
         self.cfg.y_min += dy
         self.cfg.y_max += dy
 
@@ -1184,8 +1241,8 @@ class PlotEngineView(ui.View):
     async def _on_expr(self,     interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(ExpressionModal(self.cfg, self))
 
-    async def _on_style(self,    interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(StyleModal(self.cfg, self))
+    async def _on_appearance(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(AppearanceModal(self.cfg, self))
 
     async def _on_axes(self,     interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(AxesModal(self.cfg, self))
@@ -1365,7 +1422,7 @@ class PlotEngineView(ui.View):
         import_string = cfg.export_config()
         embed.add_field(
             name="Import string  (copy → `/plot_import`)",
-            value=f"'''{import_string}'''",
+            value=f"`{import_string}`",
             inline=False,
         )
 
@@ -1373,29 +1430,12 @@ class PlotEngineView(ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def _on_theme(self, interaction: discord.Interaction) -> None:
-        view = ThemePickerView(self.cfg, parent=self)
-        await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="Choose a Theme",
-                description="Select a global theme preset for your plot.",
-                color=EMBED_COLOR,
-            ),
-            view=view,
-        )
+        # Legacy — kept for any external callers; routes to AppearanceModal.
+        await interaction.response.send_modal(AppearanceModal(self.cfg, self))
 
     async def _on_cmap(self, interaction: discord.Interaction) -> None:
-        view = ColormapPickerView(self.cfg, parent=self)
-        await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="Choose a Colormap",
-                description=(
-                    "Select one of the presets below.\n"
-                    "For a custom name, use **Advanced** → colormap field."
-                ),
-                color=EMBED_COLOR,
-            ),
-            view=view,
-        )
+        # Legacy — kept for any external callers; routes to AppearanceModal.
+        await interaction.response.send_modal(AppearanceModal(self.cfg, self))
 
     async def _on_preview(self, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
@@ -1404,7 +1444,17 @@ class PlotEngineView(ui.View):
         await interaction.response.send_modal(AnimationParamModal(self.cfg, self))
 
     async def _render_animation(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        # The interaction here came from AnimationParamModal.on_submit, which
+        # already consumed the response slot with the modal submit.  We must
+        # acknowledge via edit_message on the original builder panel, then
+        # use followup for the rendered GIF.
+        try:
+            await interaction.response.edit_message(
+                embed=_config_embed(self.cfg), view=self
+            )
+        except discord.InteractionResponded:
+            pass
+
         try:
             from utils.plotter import plot_animation
             file = await plot_animation(self.cfg)
@@ -1459,8 +1509,15 @@ class PlotEngineView(ui.View):
         await interaction.channel.send(embed=embed_out, file=file)
 
     async def _on_reset(self, interaction: discord.Interaction) -> None:
-        pt = self.cfg.plot_type
-        self.cfg = PlotConfig(plot_type=pt)
+        """Reset expressions & style but keep the current plot type and domain."""
+        defaults = PlotConfig()
+        keep = {"plot_type", "x_min", "x_max", "y_min", "y_max",
+                "t_min", "t_max", "x_lim_min", "x_lim_max",
+                "y_lim_min", "y_lim_max"}
+        for k, v in defaults.__dict__.items():
+            if k not in keep:
+                setattr(self.cfg, k, v)
+        self.cfg.last_error = ""
         self.clear_items()
         self._add_type_select()
         self._add_buttons()
@@ -1469,6 +1526,15 @@ class PlotEngineView(ui.View):
     async def on_timeout(self) -> None:
         for item in self.children:
             item.disabled = True
+        try:
+            expired_embed = _config_embed(self.cfg)
+            expired_embed.color = discord.Color.greyple()
+            expired_embed.set_footer(
+                text="Session expired — use /plot to start a new one."
+            )
+            await self._message.edit(embed=expired_embed, view=self)
+        except Exception:
+            pass  # message may already be gone
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1581,6 +1647,7 @@ class PlotEngine(commands.Cog):
             view=view,
             ephemeral=True,
         )
+        view._message = await interaction.original_response()
 
     @app_commands.command(
         name="plot",
@@ -1612,6 +1679,7 @@ class PlotEngine(commands.Cog):
             view=view,
             ephemeral=True,
         )
+        view._message = await interaction.original_response()
 
     @app_commands.command(
         name="quickplot",
