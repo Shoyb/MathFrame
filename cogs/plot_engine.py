@@ -1106,8 +1106,6 @@ class PlotEngineView(ui.View):
         """Clear and fully rebuild all rows after any config change."""
         self.clear_items()
         self._add_type_select()
-        self._add_theme_select()
-        self._add_colormap_select()
         self._add_buttons()
 
     # ── Row 0: plot type ─────────────────────────────────────────────────────
@@ -1132,57 +1130,7 @@ class PlotEngineView(ui.View):
         self._rebuild_all_items()
         await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
 
-    # ── Row 1: theme dropdown ────────────────────────────────────────────────
-
-    def _add_theme_select(self) -> None:
-        options = [
-            discord.SelectOption(
-                label=t,
-                value=t,
-                default=(t == self.cfg.theme),
-            )
-            for t in THEMES
-        ]
-        sel = ui.Select(
-            placeholder=f"Theme: {self.cfg.theme}",
-            options=options,
-            row=1,
-        )
-        sel.callback = self._on_theme_select
-        self.add_item(sel)
-
-    async def _on_theme_select(self, interaction: discord.Interaction) -> None:
-        self.cfg.theme = interaction.data["values"][0]
-        self.cfg.last_error = ""
-        self._rebuild_all_items()
-        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
-
-    # ── Row 2: colormap dropdown ─────────────────────────────────────────────
-
-    def _add_colormap_select(self) -> None:
-        options = [
-            discord.SelectOption(
-                label=c,
-                value=c,
-                default=(c == self.cfg.colormap),
-            )
-            for c in COLORMAPS
-        ]
-        sel = ui.Select(
-            placeholder=f"Colormap: {self.cfg.colormap}",
-            options=options,
-            row=2,
-        )
-        sel.callback = self._on_colormap_select
-        self.add_item(sel)
-
-    async def _on_colormap_select(self, interaction: discord.Interaction) -> None:
-        self.cfg.colormap = interaction.data["values"][0]
-        self.cfg.last_error = ""
-        self._rebuild_all_items()
-        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
-
-    # ── Rows 3–4: action buttons ─────────────────────────────────────────────
+    # ── Rows 1–4: action buttons ─────────────────────────────────────────────
 
     def _add_buttons(self) -> None:
         def _btn(label, style, row, cb):
@@ -1190,25 +1138,117 @@ class PlotEngineView(ui.View):
             b.callback = cb
             self.add_item(b)
 
-        # Row 3 — expression / style editors
-        _btn("Expressions",   discord.ButtonStyle.primary,   3, self._on_expr)
-        _btn("Appearance",    discord.ButtonStyle.primary,   3, self._on_appearance)
-        _btn("Axes & Labels", discord.ButtonStyle.primary,   3, self._on_axes)
-        _btn("Advanced",      discord.ButtonStyle.secondary, 3, self._on_advanced)
-        _btn("Fill",          discord.ButtonStyle.secondary, 3, self._on_fill)
+        # Row 1 — expression / style editors
+        _btn("Expressions",   discord.ButtonStyle.primary,   1, self._on_expr)
+        _btn("Appearance",    discord.ButtonStyle.primary,   1, self._on_appearance)
+        _btn("Axes & Labels", discord.ButtonStyle.primary,   1, self._on_axes)
+        _btn("Advanced",      discord.ButtonStyle.secondary, 1, self._on_advanced)
+        _btn("Fill",          discord.ButtonStyle.secondary, 1, self._on_fill)
+
+        # Row 2 — quick controls
+        _btn("🔍+", discord.ButtonStyle.secondary, 2, self._on_zoom_in)
+        _btn("🔍-", discord.ButtonStyle.secondary, 2, self._on_zoom_out)
+        _btn("⬅️",  discord.ButtonStyle.secondary, 2, self._on_pan_left)
+        _btn("➡️",  discord.ButtonStyle.secondary, 2, self._on_pan_right)
+        _btn("⬆️",  discord.ButtonStyle.secondary, 2, self._on_pan_up)
+
+        # Row 3 — quick controls / actions
+        _btn("⬇️",           discord.ButtonStyle.secondary, 3, self._on_pan_down)
+        _btn("Reset View",   discord.ButtonStyle.danger,    3, self._on_reset_view)
+        _btn("Limits",       discord.ButtonStyle.secondary, 3, self._on_limits)
+        _btn("Syntax Help",  discord.ButtonStyle.secondary, 3, self._on_syntax_help)
+        _btn("Export",       discord.ButtonStyle.secondary, 3, self._on_export)
 
         # Row 4 — actions (type-dependent)
-        _btn("Limits",      discord.ButtonStyle.secondary, 4, self._on_limits)
-        _btn("Export",      discord.ButtonStyle.secondary, 4, self._on_export)
-
-        if self.cfg.plot_type == "vector-field":
+        if self.cfg.plot_type in ("function", "polar"):
+            _btn("+ f(x)", discord.ButtonStyle.primary, 4, self._on_add_expr)
+        elif self.cfg.plot_type == "vector-field":
             stream_label = "Stream: ON" if self.cfg.stream else "Stream: OFF"
             _btn(stream_label, discord.ButtonStyle.primary, 4, self._on_stream)
-        elif self.cfg.plot_type not in ("scatter", "scatter-3d"):
+        
+        _btn("Theme & Cmap", discord.ButtonStyle.secondary, 4, self._on_theme_cmap)
+
+        if self.cfg.plot_type not in ("scatter", "scatter-3d"):
             _btn("Animate", discord.ButtonStyle.success, 4, self._on_animate)
 
         _btn("Render",  discord.ButtonStyle.success, 4, self._on_render)
         _btn("Reset",   discord.ButtonStyle.danger,  4, self._on_reset)
+    def _scale_domain(self, factor: float) -> None:
+        dx = (self.cfg.x_max - self.cfg.x_min) * factor
+        cx = (self.cfg.x_max + self.cfg.x_min) / 2
+        self.cfg.x_min = cx - dx / 2
+        self.cfg.x_max = cx + dx / 2
+
+        dy = (self.cfg.y_max - self.cfg.y_min) * factor
+        cy = (self.cfg.y_max + self.cfg.y_min) / 2
+        self.cfg.y_min = cy - dy / 2
+        self.cfg.y_max = cy + dy / 2
+
+        if self.cfg.plot_type in ("parametric-2d", "parametric-3d", "polar"):
+            dt = (self.cfg.t_max - self.cfg.t_min) * factor
+            ct = (self.cfg.t_max + self.cfg.t_min) / 2
+            if self.cfg.plot_type == "polar":
+                self.cfg.t_min = ct - dt / 2
+            else:
+                self.cfg.t_min = max(0.0, ct - dt / 2)
+            self.cfg.t_max = ct + dt / 2
+
+    def _shift_domain(self, x_frac: float, y_frac: float) -> None:
+        """Shift by a fraction of the *current* domain width/height so pan
+        step stays proportional after any number of zooms."""
+        dx = (self.cfg.x_max - self.cfg.x_min) * x_frac
+        self.cfg.x_min += dx
+        self.cfg.x_max += dx
+
+        dy = (self.cfg.y_max - self.cfg.y_min) * y_frac
+        self.cfg.y_min += dy
+        self.cfg.y_max += dy
+
+    async def _on_zoom_in(self, interaction: discord.Interaction) -> None:
+        self._scale_domain(0.8)
+        await self._on_preview(interaction)
+
+    async def _on_zoom_out(self, interaction: discord.Interaction) -> None:
+        self._scale_domain(1.25)
+        await self._on_preview(interaction)
+
+    async def _on_pan_left(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(-0.25, 0)
+        await self._on_preview(interaction)
+
+    async def _on_pan_right(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(0.25, 0)
+        await self._on_preview(interaction)
+
+    async def _on_pan_up(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(0, 0.25)
+        await self._on_preview(interaction)
+
+    async def _on_pan_down(self, interaction: discord.Interaction) -> None:
+        self._shift_domain(0, -0.25)
+        await self._on_preview(interaction)
+
+    async def _on_reset_view(self, interaction: discord.Interaction) -> None:
+        defaults = PlotConfig()
+        self.cfg.x_min = defaults.x_min
+        self.cfg.x_max = defaults.x_max
+        self.cfg.y_min = defaults.y_min
+        self.cfg.y_max = defaults.y_max
+        self.cfg.t_min = defaults.t_min
+        self.cfg.t_max = defaults.t_max
+        self.cfg.x_lim_min = None
+        self.cfg.x_lim_max = None
+        self.cfg.y_lim_min = None
+        self.cfg.y_lim_max = None
+        self.cfg.last_error = ""
+        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+
+    async def _on_add_expr(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(AdditionalExprModal(self.cfg, self))
+
+    async def _on_theme_cmap(self, interaction: discord.Interaction) -> None:
+        view = ThemeColormapView(self.cfg, self)
+        await interaction.response.edit_message(view=view)
 
     async def _on_expr(self,     interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(ExpressionModal(self.cfg, self))
@@ -1487,6 +1527,85 @@ class PlotEngineView(ui.View):
             await self._message.edit(embed=expired_embed, view=self)
         except Exception:
             pass  # message may already be gone
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Theme & Colormap picker — secondary ephemeral view
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ThemeColormapView(ui.View):
+    def __init__(self, cfg: PlotConfig, parent: "PlotEngineView") -> None:
+        super().__init__(timeout=600)
+        self.cfg = cfg
+        self.parent = parent
+        self._add_theme_select()
+        self._add_colormap_select()
+        
+        btn = ui.Button(label="◀ Back to Plot Engine", style=discord.ButtonStyle.secondary, row=2)
+        btn.callback = self._on_back
+        self.add_item(btn)
+
+    def _add_theme_select(self) -> None:
+        options = [
+            discord.SelectOption(
+                label=t,
+                value=t,
+                default=(t == self.cfg.theme),
+            )
+            for t in THEMES
+        ]
+        sel = ui.Select(
+            placeholder=f"Theme: {self.cfg.theme}",
+            options=options,
+            row=0,
+        )
+        sel.callback = self._on_theme_select
+        self.add_item(sel)
+
+    async def _on_theme_select(self, interaction: discord.Interaction) -> None:
+        self.cfg.theme = interaction.data["values"][0]
+        self.cfg.last_error = ""
+        # Rebuild to update default selection
+        self.clear_items()
+        self._add_theme_select()
+        self._add_colormap_select()
+        btn = ui.Button(label="◀ Back to Plot Engine", style=discord.ButtonStyle.secondary, row=2)
+        btn.callback = self._on_back
+        self.add_item(btn)
+        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+
+    def _add_colormap_select(self) -> None:
+        options = [
+            discord.SelectOption(
+                label=c,
+                value=c,
+                default=(c == self.cfg.colormap),
+            )
+            for c in COLORMAPS
+        ]
+        sel = ui.Select(
+            placeholder=f"Colormap: {self.cfg.colormap}",
+            options=options,
+            row=1,
+        )
+        sel.callback = self._on_colormap_select
+        self.add_item(sel)
+
+    async def _on_colormap_select(self, interaction: discord.Interaction) -> None:
+        self.cfg.colormap = interaction.data["values"][0]
+        self.cfg.last_error = ""
+        # Rebuild to update default selection
+        self.clear_items()
+        self._add_theme_select()
+        self._add_colormap_select()
+        btn = ui.Button(label="◀ Back to Plot Engine", style=discord.ButtonStyle.secondary, row=2)
+        btn.callback = self._on_back
+        self.add_item(btn)
+        await interaction.response.edit_message(embed=_config_embed(self.cfg), view=self)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        self.parent._rebuild_all_items()
+        await interaction.response.edit_message(view=self.parent)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
