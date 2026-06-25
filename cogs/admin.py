@@ -235,4 +235,3 @@ async def setup(bot: commands.Bot) -> None:
     """Load the AdminCog into *bot*."""
     cog = AdminCog(bot)
     await bot.add_cog(cog)
-    bot.tree.add_command(cog.admin_group)
