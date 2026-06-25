@@ -473,7 +473,7 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
     domain_x = ui.TextInput(label="x / t / theta range  (min, max)",
                              placeholder="-10, 10",
                              required=False, max_length=40)
-    domain_y = ui.TextInput(label="y range  (ignored for 1-D / parametric / polar)",
+    domain_y = ui.TextInput(label="y range (ignored for 1-D/parametric/polar)",
                              placeholder="-10, 10",
                              required=False, max_length=40)
 
@@ -486,101 +486,101 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
 
         # Set context-specific labels and defaults per plot type
         if pt == "function":
-            self.expr_a._underlying.label = "f(x) — expression in x"
+            self.expr_a.label = "f(x) — expression in x"
             self.expr_a.placeholder = "sin(x)  or  x**2 - 1  or  exp(-x)"
             self.expr_a.default = cfg.expr_main
-            self.expr_b._underlying.label = "— unused"
-            self.expr_c._underlying.label = "— unused"
+            self.expr_b.label = "— unused"
+            self.expr_c.label = "— unused"
 
         elif pt in ("contour", "surface", "wireframe", "heatmap"):
-            self.expr_a._underlying.label = "f(x,y) — expression in x and y"
+            self.expr_a.label = "f(x,y) — expression in x and y"
             self.expr_a.placeholder = "sin(x)*cos(y)  or  x**2 + y**2"
             self.expr_a.default = cfg.expr_main
-            self.expr_b._underlying.label = "— unused"
-            self.expr_c._underlying.label = "— unused"
+            self.expr_b.label = "— unused"
+            self.expr_c.label = "— unused"
 
         elif pt == "implicit":
-            self.expr_a._underlying.label = "f(x,y) — left-hand side"
+            self.expr_a.label = "f(x,y) — left-hand side"
             self.expr_a.placeholder = "x**2 + y**2  or  x*sin(y)"
             self.expr_a.default = cfg.expr_main
-            self.expr_b._underlying.label = "RHS constant  (f(x,y) = ?)"
+            self.expr_b.label = "RHS constant  (f(x,y) = ?)"
             self.expr_b.placeholder = "0.0"
             self.expr_b.default = str(cfg.implicit_rhs)
-            self.expr_c._underlying.label = "— unused"
+            self.expr_c.label = "— unused"
 
         elif pt == "inequality":
-            self.expr_a._underlying.label = "f(x,y) — left-hand side"
+            self.expr_a.label = "f(x,y) — left-hand side"
             self.expr_a.placeholder = "x**2 + y**2"
             self.expr_a.default = cfg.expr_main
-            self.expr_b._underlying.label = "Operator  (<  <=  >  >=)"
+            self.expr_b.label = "Operator  (<  <=  >  >=)"
             self.expr_b.placeholder = "<="
             self.expr_b.default = cfg.inequality_op
-            self.expr_c._underlying.label = "RHS constant"
+            self.expr_c.label = "RHS constant"
             self.expr_c.placeholder = "1.0"
             self.expr_c.default = str(cfg.implicit_rhs)
 
         elif pt == "vector-field":
-            self.expr_a._underlying.label = "u(x,y) — horizontal component"
+            self.expr_a.label = "u(x,y) — horizontal component"
             self.expr_a.placeholder = "-y  or  sin(x)"
             self.expr_a.default = cfg.expr_u
-            self.expr_b._underlying.label = "v(x,y) — vertical component"
+            self.expr_b.label = "v(x,y) — vertical component"
             self.expr_b.placeholder = "x  or  cos(y)"
             self.expr_b.default = cfg.expr_v
-            self.expr_c._underlying.label = "— unused"
+            self.expr_c.label = "— unused"
 
         elif pt == "parametric-2d":
-            self.expr_a._underlying.label = "x(t) — horizontal"
+            self.expr_a.label = "x(t) — horizontal"
             self.expr_a.placeholder = "cos(t)  or  t*sin(t)"
             self.expr_a.default = cfg.expr_x
-            self.expr_b._underlying.label = "y(t) — vertical"
+            self.expr_b.label = "y(t) — vertical"
             self.expr_b.placeholder = "sin(t)  or  t*cos(t)"
             self.expr_b.default = cfg.expr_y
-            self.expr_c._underlying.label = "— unused"
+            self.expr_c.label = "— unused"
 
         elif pt == "parametric-3d":
-            self.expr_a._underlying.label = "x(t)"
+            self.expr_a.label = "x(t)"
             self.expr_a.placeholder = "cos(t)"
             self.expr_a.default = cfg.expr_x
-            self.expr_b._underlying.label = "y(t)"
+            self.expr_b.label = "y(t)"
             self.expr_b.placeholder = "sin(t)"
             self.expr_b.default = cfg.expr_y
-            self.expr_c._underlying.label = "z(t)"
+            self.expr_c.label = "z(t)"
             self.expr_c.placeholder = "t / (2*pi)"
             self.expr_c.default = cfg.expr_z
 
         elif pt in ("scatter", "scatter-3d"):
-            self.expr_a._underlying.label = "xs — comma-separated x values"
+            self.expr_a.label = "xs — comma-separated x values"
             self.expr_a.placeholder = "1, 2, 3, 4, 5"
             self.expr_a.default = cfg.scatter_xs
-            self.expr_b._underlying.label = "ys — comma-separated y values"
+            self.expr_b.label = "ys — comma-separated y values"
             self.expr_b.placeholder = "1, 4, 9, 16, 25"
             self.expr_b.default = cfg.scatter_ys
             if pt == "scatter-3d":
-                self.expr_c._underlying.label = "zs — comma-separated z values"
+                self.expr_c.label = "zs — comma-separated z values"
                 self.expr_c.placeholder = "0, 1, 0, 1, 0"
                 self.expr_c.default = cfg.scatter_zs
             else:
-                self.expr_c._underlying.label = "— unused"
+                self.expr_c.label = "— unused"
 
         elif pt == "riemann":
-            self.expr_a._underlying.label = "f(x) — expression to integrate"
+            self.expr_a.label = "f(x) — expression to integrate"
             self.expr_a.placeholder = "sin(x)  or  x**2"
             self.expr_a.default = cfg.expr_main
-            self.expr_b._underlying.label = "n — number of rectangles"
+            self.expr_b.label = "n — number of rectangles"
             self.expr_b.placeholder = "8"
             self.expr_b.default = str(cfg.riemann_n)
-            self.expr_c._underlying.label = "method — left | right | midpoint"
+            self.expr_c.label = "method — left | right | midpoint"
             self.expr_c.placeholder = "left"
             self.expr_c.default = cfg.riemann_method
 
         elif pt == "polar":
-            self.expr_a._underlying.label = "r(theta) — radial expression"
+            self.expr_a.label = "r(theta) — radial expression"
             self.expr_a.placeholder = "1 + cos(theta)  or  cos(3*theta)"
             self.expr_a.default = cfg.expr_main
-            self.expr_b._underlying.label = "theta symbol name  (default: theta)"
+            self.expr_b.label = "theta symbol name  (default: theta)"
             self.expr_b.placeholder = "theta"
             self.expr_b.default = cfg.theta_symbol
-            self.expr_c._underlying.label = "— unused"
+            self.expr_c.label = "— unused"
 
         else:
             self.expr_a.default = cfg.expr_main
@@ -656,7 +656,7 @@ class ExpressionModal(ui.Modal, title="Expressions & Domain"):
 
 class AppearanceModal(ui.Modal, title="Appearance — Line Style"):
     line_color = ui.TextInput(
-        label="Line colour  (hex or name, e.g. #1f77b4, red)",
+        label="Line colour (hex/name, e.g. #1f77b4, red)",
         placeholder="#1f77b4", required=False, max_length=40,
     )
     width_style = ui.TextInput(
@@ -727,7 +727,7 @@ class AxesModal(ui.Modal, title="Axes, Labels & Scale"):
     zl   = ui.TextInput(label="z-axis label  (3-D only)", placeholder="z",
                         required=False, max_length=60)
     log_grid = ui.TextInput(
-        label="Log axes & grid  (log=x|y|both|none, grid=yes|no)",
+        label="Log & grid (log=x|y|both|none, grid=yes|no)",
         placeholder="log=none, grid=yes",
         required=False, max_length=40,
     )
