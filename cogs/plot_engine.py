@@ -772,19 +772,19 @@ class AxesModal(ui.Modal, title="Axes, Labels & Scale"):
 
 class AdvancedModal(ui.Modal, title="Advanced Options"):
     levels_field = ui.TextInput(
-        label="Contour levels  (2 – 100, contour plots only)",
+        label="Contour levels (2-100, contour only)",
         placeholder="20", required=False, max_length=5,
     )
     res_1d     = ui.TextInput(
-        label="1-D resolution  (line / parametric, 100 – 2000)",
+        label="1-D resolution (100-2000)",
         placeholder="800", required=False, max_length=6,
     )
     res_2d     = ui.TextInput(
-        label="2-D resolution  (contour / surface, 40 – 400)",
+        label="2-D resolution (40-400)",
         placeholder="120", required=False, max_length=6,
     )
     figsize    = ui.TextInput(
-        label="Figure size  (width, height in inches)",
+        label="Figure size (width, height in inches)",
         placeholder="8, 5", required=False, max_length=15,
     )
 
@@ -819,11 +819,11 @@ class AdvancedModal(ui.Modal, title="Advanced Options"):
 
 class FillModal(ui.Modal, title="Fill / Area Shading"):
     enabled    = ui.TextInput(
-        label="Enable fill shading?  (yes / no)",
+        label="Enable fill shading? (yes/no)",
         placeholder="no", required=False, max_length=5,
     )
     fill_color = ui.TextInput(
-        label="Fill colour  (hex / name, blank = inherit line colour)",
+        label="Fill colour (hex/name, blank=inherit)",
         placeholder="#1f77b4  or  skyblue  or  leave blank",
         required=False, max_length=40,
     )

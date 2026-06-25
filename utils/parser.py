@@ -68,10 +68,14 @@ def _validate_raw(expr: str) -> None:
             f"Maximum allowed length is {config.MAX_EXPR_LENGTH} characters."
         )
     for kw in FORBIDDEN_KEYWORDS:
-        if kw in expr:
-            raise ValueError(
-                f"Expression contains a forbidden keyword: `{kw}`"
-            )
+        if kw == "__":
+            if "__" in expr:
+                raise ValueError("Expression contains a forbidden keyword: `__`")
+        else:
+            if re.search(rf"\b{re.escape(kw)}\b", expr):
+                raise ValueError(
+                    f"Expression contains a forbidden keyword: `{kw}`"
+                )
 
 # ---------------------------------------------------------------------------
 # Format detection
