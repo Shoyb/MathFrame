@@ -139,6 +139,8 @@ class CalculusCog(commands.Cog, name="Calculus"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -214,6 +216,8 @@ class CalculusCog(commands.Cog, name="Calculus"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -279,6 +283,8 @@ class CalculusCog(commands.Cog, name="Calculus"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -345,6 +351,8 @@ class CalculusCog(commands.Cog, name="Calculus"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -417,8 +425,22 @@ class CalculusCog(commands.Cog, name="Calculus"):
                 steps=steps
             )
             await interaction.followup.send(embed=embed)
-        except Exception as exc:
+        except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
     # -----------------------------------------------------------------------
     # /product_series
@@ -477,8 +499,22 @@ class CalculusCog(commands.Cog, name="Calculus"):
                 steps=steps
             )
             await interaction.followup.send(embed=embed)
-        except Exception as exc:
+        except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
 
     # -----------------------------------------------------------------------
@@ -613,10 +649,18 @@ class CalculusCog(commands.Cog, name="Calculus"):
             
             await interaction.followup.send(embed=embed, file=file)
             
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
         except NotImplementedError:
             await interaction.followup.send(embed=error_embed("SymPy could not solve this ODE."))
         except Exception as exc:
-            await interaction.followup.send(embed=error_embed(f"An error occurred: {exc}"))
+            await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
 
 
 # ---------------------------------------------------------------------------

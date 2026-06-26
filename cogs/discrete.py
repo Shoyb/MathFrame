@@ -17,6 +17,10 @@ import itertools
 import math
 import re
 
+import sympy
+from sympy.logic.boolalg import And, Or, Not, Xor, Implies, simplify_logic, to_dnf, to_cnf
+from sympy.logic.inference import satisfiable
+
 from discord import app_commands
 from discord.ext import commands
 import discord
@@ -235,6 +239,62 @@ def _evaluate_boolean(node: tuple | str, values: dict[str, bool]) -> bool:
         return (not left) or right
 
     raise ValueError(f"Unknown operator `{op}`.")  # pragma: no cover — defensive
+
+
+def _ast_to_sympy(node: tuple | str) -> sympy.Basic:
+    """
+    Recursively convert a :class:`_BoolParser` AST into a SymPy logic expression.
+
+    Variable names (single uppercase letters) become :class:`sympy.Symbol` objects;
+    operators map to their ``sympy.logic.boolalg`` equivalents.
+    """
+    if isinstance(node, str):
+        return sympy.Symbol(node)
+    op = node[0]
+    if op == "NOT":
+        return Not(_ast_to_sympy(node[1]))
+    left  = _ast_to_sympy(node[1])
+    right = _ast_to_sympy(node[2])
+    if op == "AND":
+        return And(left, right)
+    if op == "OR":
+        return Or(left, right)
+    if op == "XOR":
+        return Xor(left, right)
+    if op == "IMPLIES":
+        return Implies(left, right)
+    raise ValueError(f"Unknown operator `{op}`.")  # pragma: no cover
+
+
+def _bool_str_to_sympy(expr_str: str) -> sympy.Basic:
+    """
+    Parse a boolean expression string into a SymPy logic expression.
+
+    Delegates tokenising and parsing to :func:`_tokenize_boolean` and
+    :class:`_BoolParser`, then converts the resulting AST via
+    :func:`_ast_to_sympy`.
+
+    Parameters
+    ----------
+    expr_str:
+        Boolean expression using the same syntax as ``/truth_table``,
+        e.g. ``"A AND (B OR NOT C)"``.
+
+    Returns
+    -------
+    sympy.Basic
+        A SymPy logic expression ready for ``simplify_logic``, ``to_dnf``,
+        ``to_cnf``, or ``satisfiable``.
+
+    Raises
+    ------
+    ValueError
+        If the expression is empty, contains invalid tokens, or has
+        unbalanced parentheses.
+    """
+    tokens = _tokenize_boolean(expr_str)
+    ast    = _BoolParser(tokens).parse()
+    return _ast_to_sympy(ast)
 
 
 def _build_truth_table_lines(variables: list[str], rows: list[tuple[bool, ...]]) -> tuple[str, str, list[str]]:
@@ -654,6 +714,160 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /simplify_bool
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="simplify_bool",
+        description="Simplify a boolean expression, or convert it to DNF / CNF.",
+    )
+    @app_commands.describe(
+        expression="Boolean expression using A-Z variables and and/or/not/xor/implies",
+        form="Output form (default: simplified)",
+    )
+    @app_commands.choices(form=[
+        app_commands.Choice(name="Simplified",                    value="simplified"),
+        app_commands.Choice(name="DNF (Disjunctive Normal Form)", value="dnf"),
+        app_commands.Choice(name="CNF (Conjunctive Normal Form)", value="cnf"),
+    ])
+    @app_commands.checks.cooldown(1, 3.0)
+    async def simplify_bool(
+        self,
+        interaction: discord.Interaction,
+        expression: str,
+        form: str = "simplified",
+    ) -> None:
+        """
+        Simplify *expression* or convert it to a normal form.
+
+        Uses the existing tokeniser and parser from ``/truth_table``, then
+        converts to a SymPy logic expression for simplification.
+
+        Examples
+        --------
+        ``A AND (B OR NOT A)``  →  ``A AND B``
+        ``A OR (A AND B)``      →  ``A``  (absorption law)
+        """
+        await interaction.response.defer()
+        try:
+            sympy_expr = _bool_str_to_sympy(expression)
+
+            if form == "dnf":
+                result = to_dnf(sympy_expr, simplify=True)
+                form_label = "Disjunctive Normal Form (DNF)"
+            elif form == "cnf":
+                result = to_cnf(sympy_expr, simplify=True)
+                form_label = "Conjunctive Normal Form (CNF)"
+            else:
+                result = simplify_logic(sympy_expr)
+                form_label = "Simplified"
+
+            result_str = str(result)
+
+            embed = math_embed(
+                title=f"Boolean Simplification — {form_label}",
+                result=result_str,
+                steps=[
+                    ("Original", expression),
+                    (form_label, result_str),
+                ],
+                footer="Operators: & = AND   | = OR   ~ = NOT   ^ = XOR",
+            )
+            await interaction.followup.send(embed=embed)
+
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
+
+    # -----------------------------------------------------------------------
+    # /logic_equiv
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="logic_equiv",
+        description="Check whether two boolean expressions are logically equivalent.",
+    )
+    @app_commands.describe(
+        expression_a="First boolean expression, e.g. 'A AND B'",
+        expression_b="Second boolean expression, e.g. 'NOT (NOT A OR NOT B)'",
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def logic_equiv(
+        self,
+        interaction: discord.Interaction,
+        expression_a: str,
+        expression_b: str,
+    ) -> None:
+        """
+        Determine whether *expression_a* and *expression_b* are logically equivalent.
+
+        Two expressions are equivalent when they produce the same output for
+        every possible assignment of their variables.  This is checked by
+        asking whether ``A XOR B`` is unsatisfiable — if no assignment can
+        make ``A XOR B`` true, then ``A`` and ``B`` always agree.
+
+        Examples
+        --------
+        ``A AND B``  vs  ``NOT (NOT A OR NOT B)``  →  Equivalent (De Morgan)
+        ``A OR B``   vs  ``A AND B``                →  Not equivalent
+        """
+        await interaction.response.defer()
+        try:
+            sympy_a = _bool_str_to_sympy(expression_a)
+            sympy_b = _bool_str_to_sympy(expression_b)
+
+            # If A XOR B is unsatisfiable, A and B always agree → equivalent.
+            diff        = Xor(sympy_a, sympy_b)
+            is_equiv    = not satisfiable(diff)
+
+            if is_equiv:
+                title      = "Logically Equivalent"
+                colour_hex = 0x57F287   # green
+                verdict    = "Both expressions produce identical truth values for all variable assignments."
+            else:
+                title      = "Not Logically Equivalent"
+                colour_hex = 0xED4245   # red
+                # Find a counterexample from satisfiable's witness
+                witness    = satisfiable(diff)
+                if witness and witness is not False:
+                    # witness is {Symbol: bool, ...}; format it as a variable assignment
+                    assign = ",  ".join(
+                        f"{str(sym)} = {'T' if val else 'F'}"
+                        for sym, val in sorted(witness.items(), key=lambda kv: str(kv[0]))
+                    )
+                    verdict = f"Counterexample:  {assign}"
+                else:
+                    verdict = "The expressions differ for at least one variable assignment."
+
+            simplified_a = str(simplify_logic(sympy_a))
+            simplified_b = str(simplify_logic(sympy_b))
+
+            embed = math_embed(
+                title=title,
+                result=verdict,
+                steps=[
+                    ("Expression A",   expression_a),
+                    ("Expression B",   expression_b),
+                    ("Simplified A",   simplified_a),
+                    ("Simplified B",   simplified_b),
+                    ("Verdict",        verdict),
+                ],
+                footer="Equivalence checked via XOR satisfiability",
+            )
+            embed.colour = discord.Colour(colour_hex)
+            await interaction.followup.send(embed=embed)
+
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
 
 # ---------------------------------------------------------------------------

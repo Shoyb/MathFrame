@@ -171,6 +171,8 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -235,6 +237,8 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -297,6 +301,8 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -385,6 +391,8 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")

@@ -111,6 +111,8 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -204,6 +206,8 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -257,6 +261,8 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -312,6 +318,8 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -449,6 +457,8 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
@@ -567,6 +577,16 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
         except Exception as exc:
             await interaction.followup.send(
                 embed=error_embed(f"An unexpected error occurred: {exc}")
@@ -625,8 +645,16 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
                 footer=f"Divided with respect to {var}"
             )
             await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except sympy.PolynomialError as exc:
             await interaction.followup.send(embed=error_embed(f"Polynomial error: {exc}"))
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
         except Exception as exc:
             await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
 
@@ -678,8 +706,22 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
                 embed.color = discord.Color.red()
                 
             await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
         except Exception as exc:
-            await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
 
 # ---------------------------------------------------------------------------
