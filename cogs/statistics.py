@@ -11,11 +11,12 @@ Commands
 /zscore        value  mean  stdev          Standard score (z-score).
 /correlation   data_x  data_y             Pearson correlation coefficient.
 /regression    data_x  data_y             Linear regression with scatter plot.
-/normal_pdf    mean  stdev                Normal distribution PDF plot.
-/normal_cdf    mean stdev upper [lower]   Normal distribution CDF plot.
-/inv_normal    probability mean stdev     Inverse normal.
-/binomial_cdf  n p x                      Binomial CDF plot.
-/poisson_cdf   lam x                      Poisson CDF plot.
+/distribution  kind  params               Unified distribution command (all 5 distributions).
+/normal_pdf    mean  stdev                [DEPRECATED] Normal distribution PDF plot.
+/normal_cdf    mean stdev upper [lower]   [DEPRECATED] Normal distribution CDF.
+/inv_normal    probability mean stdev     [DEPRECATED] Inverse normal.
+/binomial_cdf  n p x                      [DEPRECATED] Binomial CDF.
+/poisson_cdf   lam x                      [DEPRECATED] Poisson CDF.
 
 Data input
 ----------
@@ -306,6 +307,55 @@ def _poisson_cdf_bytes(lam: float, x_val: int) -> io.BytesIO:
     plt.close(fig)
     buf.seek(0)
     return buf
+
+
+# ---------------------------------------------------------------------------
+# Distribution registry — for the unified /distribution command (T1-1)
+# ---------------------------------------------------------------------------
+
+_DIST_PARAMS: dict[str, list[str]] = {
+    "normal_pdf":   ["mean", "stdev"],
+    "normal_cdf":   ["mean", "stdev", "upper"],
+    "inv_normal":   ["probability", "mean", "stdev"],
+    "binomial_cdf": ["n", "p", "x"],
+    "poisson_cdf":  ["lam", "x"],
+}
+
+
+def _parse_dist_params(raw: str, expected: list[str]) -> dict:
+    """
+    Parse a comma-separated parameter string into a named dict.
+
+    Parameters
+    ----------
+    raw:
+        User-supplied string, e.g. ``"0, 0, 1"``.
+    expected:
+        Ordered list of parameter names, e.g. ``["mean", "stdev", "upper"]``.
+
+    Returns
+    -------
+    dict
+        ``{name: float}`` for each expected parameter.
+
+    Raises
+    ------
+    ValueError
+        If the count doesn't match or any token isn't numeric.
+    """
+    tokens = [t.strip() for t in raw.split(",")]
+    if len(tokens) != len(expected):
+        raise ValueError(
+            f"Expected {len(expected)} parameter(s) ({', '.join(expected)}), "
+            f"got {len(tokens)}."
+        )
+    result: dict[str, float] = {}
+    for name, tok in zip(expected, tokens):
+        try:
+            result[name] = float(tok)
+        except ValueError:
+            raise ValueError(f"Parameter `{name}` must be a number (got `{tok}`).")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -605,12 +655,153 @@ class StatisticsCog(commands.Cog, name="Statistics"):
             await interaction.followup.send(embed=error_embed(str(exc)))
 
     # -----------------------------------------------------------------------
-    # /normal_pdf
+    # /distribution  (T1-1 — unified distribution command)
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="distribution",
+        description="Compute or plot a probability distribution. Use `kind` to choose; `params` for values.",
+    )
+    @app_commands.describe(
+        kind="Which distribution to use",
+        params="Comma-separated parameters (see parameter order in each choice description)",
+    )
+    @app_commands.choices(kind=[
+        app_commands.Choice(name="Normal PDF   — params: mean, stdev",           value="normal_pdf"),
+        app_commands.Choice(name="Normal CDF   — params: mean, stdev, upper",    value="normal_cdf"),
+        app_commands.Choice(name="Inverse Normal — params: probability, mean, stdev", value="inv_normal"),
+        app_commands.Choice(name="Binomial CDF — params: n, p, x",              value="binomial_cdf"),
+        app_commands.Choice(name="Poisson CDF  — params: lam, x",               value="poisson_cdf"),
+    ])
+    @app_commands.checks.cooldown(1, 3.0)
+    async def distribution(
+        self,
+        interaction: discord.Interaction,
+        kind: str,
+        params: str,
+    ) -> None:
+        """
+        Unified distribution command that replaces the five individual commands.
+
+        Each ``kind`` maps to a parameter list:
+
+        * ``normal_pdf``   — mean, stdev
+        * ``normal_cdf``   — mean, stdev, upper
+        * ``inv_normal``   — probability, mean, stdev
+        * ``binomial_cdf`` — n (int), p, x (int)
+        * ``poisson_cdf``  — lam, x (int)
+        """
+        await interaction.response.defer()
+        try:
+            expected = _DIST_PARAMS[kind]
+            kwargs   = _parse_dist_params(params, expected)
+
+            loop = asyncio.get_running_loop()
+
+            if kind == "normal_pdf":
+                mean, stdev = kwargs["mean"], kwargs["stdev"]
+                if stdev <= 0:
+                    raise ValueError("Standard deviation must be positive (σ > 0).")
+                peak = scipy_stats.norm.pdf(mean, loc=mean, scale=stdev)
+                embed = discord.Embed(
+                    title=f"Normal PDF  N(μ={mean}, σ={stdev})",
+                    colour=discord.Colour.blurple(),
+                )
+                embed.add_field(name="Peak PDF", value=f"{peak:.6g}", inline=True)
+                embed.add_field(name="68%", value=f"[{mean-stdev:.4g}, {mean+stdev:.4g}]", inline=True)
+                embed.add_field(name="95%", value=f"[{mean-2*stdev:.4g}, {mean+2*stdev:.4g}]", inline=True)
+                embed.set_image(url="attachment://dist.png")
+                buf  = await loop.run_in_executor(None, _normal_pdf_bytes, mean, stdev)
+                file = discord.File(buf, filename="dist.png")
+                await interaction.followup.send(embed=embed, file=file)
+
+            elif kind == "normal_cdf":
+                mean, stdev, upper = kwargs["mean"], kwargs["stdev"], kwargs["upper"]
+                lower = -np.inf
+                if stdev <= 0:
+                    raise ValueError("Standard deviation must be positive (σ > 0).")
+                prob = (scipy_stats.norm.cdf(upper, loc=mean, scale=stdev)
+                        - scipy_stats.norm.cdf(lower, loc=mean, scale=stdev))
+                embed = discord.Embed(
+                    title=f"Normal CDF  N(μ={mean}, σ={stdev})",
+                    colour=discord.Colour.blurple(),
+                )
+                embed.add_field(name="P(X ≤ upper)", value=f"{prob:.6g}", inline=False)
+                embed.set_image(url="attachment://dist.png")
+                buf  = await loop.run_in_executor(None, _normal_cdf_bytes, mean, stdev, lower, upper)
+                file = discord.File(buf, filename="dist.png")
+                await interaction.followup.send(embed=embed, file=file)
+
+            elif kind == "inv_normal":
+                prob, mean, stdev = kwargs["probability"], kwargs["mean"], kwargs["stdev"]
+                if stdev <= 0:
+                    raise ValueError("Standard deviation must be positive (σ > 0).")
+                if not 0 < prob < 1:
+                    raise ValueError("Probability must be strictly between 0 and 1.")
+                x_val = scipy_stats.norm.ppf(prob, loc=mean, scale=stdev)
+                embed = discord.Embed(
+                    title=f"Inverse Normal  N(μ={mean}, σ={stdev})",
+                    colour=discord.Colour.blurple(),
+                )
+                embed.add_field(name="x", value=f"{x_val:.6g}", inline=True)
+                embed.add_field(name="P(X ≤ x)", value=f"{prob}", inline=True)
+                embed.set_image(url="attachment://dist.png")
+                buf  = await loop.run_in_executor(None, _inv_normal_bytes, mean, stdev, prob, x_val)
+                file = discord.File(buf, filename="dist.png")
+                await interaction.followup.send(embed=embed, file=file)
+
+            elif kind == "binomial_cdf":
+                n, p, x = int(kwargs["n"]), kwargs["p"], int(kwargs["x"])
+                if n <= 0:
+                    raise ValueError("Number of trials (n) must be a positive integer.")
+                if not 0 <= p <= 1:
+                    raise ValueError("Probability of success (p) must be between 0 and 1.")
+                if x < 0 or x > n:
+                    raise ValueError(f"Successes (x) must be between 0 and {n}.")
+                prob = scipy_stats.binom.cdf(x, n, p)
+                pmf  = scipy_stats.binom.pmf(x, n, p)
+                embed = discord.Embed(
+                    title=f"Binomial CDF  B(n={n}, p={p})",
+                    colour=discord.Colour.blurple(),
+                )
+                embed.add_field(name=f"P(X ≤ {x})", value=f"{prob:.6g}", inline=True)
+                embed.add_field(name=f"P(X = {x})", value=f"{pmf:.6g}", inline=True)
+                embed.set_image(url="attachment://dist.png")
+                buf  = await loop.run_in_executor(None, _binomial_cdf_bytes, n, p, x)
+                file = discord.File(buf, filename="dist.png")
+                await interaction.followup.send(embed=embed, file=file)
+
+            elif kind == "poisson_cdf":
+                lam, x = kwargs["lam"], int(kwargs["x"])
+                if lam <= 0:
+                    raise ValueError("Rate (λ) must be positive.")
+                if x < 0:
+                    raise ValueError("Occurrences (x) cannot be negative.")
+                prob = scipy_stats.poisson.cdf(x, lam)
+                pmf  = scipy_stats.poisson.pmf(x, lam)
+                embed = discord.Embed(
+                    title=f"Poisson CDF  Po(λ={lam})",
+                    colour=discord.Colour.blurple(),
+                )
+                embed.add_field(name=f"P(X ≤ {x})", value=f"{prob:.6g}", inline=True)
+                embed.add_field(name=f"P(X = {x})", value=f"{pmf:.6g}", inline=True)
+                embed.set_image(url="attachment://dist.png")
+                buf  = await loop.run_in_executor(None, _poisson_cdf_bytes, lam, x)
+                file = discord.File(buf, filename="dist.png")
+                await interaction.followup.send(embed=embed, file=file)
+
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /normal_pdf  [DEPRECATED — use /distribution kind=normal_pdf]
     # -----------------------------------------------------------------------
 
     @app_commands.command(
         name="normal_pdf",
-        description="Plot the probability density function of a normal distribution.",
+        description="[DEPRECATED — use /distribution] Plot the Normal distribution PDF.",
     )
     @app_commands.describe(
         mean="Mean (μ) of the distribution",

@@ -15,13 +15,14 @@ MathFrame/
 ├── main.py                  Bot entry point, cog loader, global error handler
 ├── config.py                Environment-driven configuration constants
 ├── requirements.txt
-├── math_bot_coding_plan.md  Original design/build-order document
+├── math_bot_coding_plan.md  Feature implementation plan (Tier 1 → Tier 3)
+├── MathFrame_CODEBASE.md    This document
 ├── data/
 │   ├── cache.py              In-memory TTL result cache (singleton)
 │   └── history.py            In-memory per-user command history (singleton)
 ├── utils/
 │   ├── parser.py              THE expression parser — format detection + validation
-│   ├── expr_utils.py          Separate, lighter-weight parser used only by plotting
+│   ├── expr_utils.py          Lighter-weight parser for the plotting subsystem (validation routed through parser._validate_raw)
 │   ├── solver.py               Step-by-step solution builders (quadratic, diff, integral, factor)
 │   ├── formatter.py            Discord embed builders (success/error/info)
 │   ├── renderer.py             LaTeX/SymPy → PNG image rendering (matplotlib)
@@ -32,11 +33,13 @@ MathFrame/
     ├── arithmetic.py        /simplify /solve /expand /factor /table /poly_div /verify
     ├── calculus.py           /diff /integrate /limit /series /sum_series /product_series /ode
     ├── linear_algebra.py     /matrix_det /matrix_inv /eigenvalues /dot /cross /rref
-    ├── statistics.py          /mean /median /mode /stdev /variance /zscore /correlation /regression /normal_pdf /normal_cdf /inv_normal /binomial_cdf /poisson_cdf
+    ├── statistics.py          /mean /median /mode /stdev /variance /zscore /correlation /regression
+    │                          /distribution [unified] /normal_pdf /normal_cdf /inv_normal /binomial_cdf /poisson_cdf [deprecated]
     ├── number_theory.py       /gcd /lcm /is_prime /factorize /primes_up_to /modular /fibonacci
+    │                          /totient /divisors /is_perfect /mobius /chinese_remainder
     ├── geometry.py             /circle_area /circle_circumference /triangle_area /pythagorean /trig /distance
-    ├── discrete.py              /permutation /combination /truth_table /set_ops /binomial_coeff
-    ├── symbolic.py               /latex /subs /partial_fraction /roots
+    ├── discrete.py              /permutation /combination /truth_table /set_ops /binomial_coeff /simplify_bool /logic_equiv
+    ├── symbolic.py               /latex /subs /partial_fraction /roots /identify
     ├── equations.py               /solve_sim
     ├── complex.py                  /complex_eval /complex_polar /complex_rect
     ├── base_n.py                   /base_convert /base_math /base_logic
@@ -47,7 +50,7 @@ MathFrame/
     └── wiki.py                         /wiki /wiki_search
 ```
 
-Total: ~12,000 lines of Python across 16 cogs and 8 utility/data modules
+Total: ~14,500 lines of Python across 16 cogs and 8 utility/data modules
 (excluding `__pycache__`, which — see Known Issues — should not be in the
 repo at all).
 
@@ -272,6 +275,7 @@ via `@app_commands.checks.cooldown`.
 - `/table expression start end step` — generate a value table
 - `/poly_div numerator denominator` — polynomial division
 - `/verify expr1 expr2` — expression equivalence checker
+- `/compare expr_f expr_g` — side-by-side function comparison
 
 ### Calculus (`cogs/calculus.py`)
 - `/diff expression [variable] [order]` — differentiate, with steps
@@ -293,24 +297,30 @@ via `@app_commands.checks.cooldown`.
 - `/rref matrix` — reduced row-echelon form
 
 ### Statistics (`cogs/statistics.py`)
+- `/distribution kind params` — **unified distribution command** (replaces the five commands below). `kind` is an autocomplete choice: `normal_pdf`, `normal_cdf`, `inv_normal`, `binomial_cdf`, `poisson_cdf`. `params` is a comma-separated list whose required values depend on the chosen `kind` (shown in the choice label).
 - `/mean`, `/median`, `/mode`, `/stdev`, `/variance` — descriptive stats
   on a comma-separated data set
 - `/zscore value data` — standard score for a value within a data set
 - `/correlation x y` — Pearson correlation coefficient
 - `/regression x y` — linear regression fit, returns a plotted image
-- `/normal_pdf mean stdev` — plots a normal distribution's PDF
-- `/normal_cdf value mean stdev` — plots a normal CDF up to a value
-- `/inv_normal prob mean stdev` — inverse normal CDF (Z-score to value)
-- `/binomial_cdf n p x` — binomial cumulative probability
-- `/poisson_cdf lam x` — poisson cumulative probability
+- `/normal_pdf mean stdev` — \[DEPRECATED — use `/distribution`\] Normal distribution PDF
+- `/normal_cdf mean stdev upper` — \[DEPRECATED\] Normal CDF
+- `/inv_normal prob mean stdev` — \[DEPRECATED\] Inverse normal CDF
+- `/binomial_cdf n p x` — \[DEPRECATED\] Binomial cumulative probability
+- `/poisson_cdf lam x` — \[DEPRECATED\] Poisson cumulative probability
 
 ### Number Theory (`cogs/number_theory.py`)
 - `/gcd numbers`, `/lcm numbers` — GCD/LCM of a list of integers
 - `/is_prime n` — primality test (n ≤ 10¹²)
 - `/factorize n` — prime factorization (n ≤ 10¹⁵)
-- `/primes_up_to n` — list primes up to n (capped)
+- `/primes_up_to n` — list primes up to n (capped at 10,000)
 - `/modular base exp m` — fast modular exponentiation
-- `/fibonacci n` — first n Fibonacci numbers (capped)
+- `/fibonacci n` — first n Fibonacci numbers (capped at 200)
+- `/totient n` — Euler's totient φ(n): count of integers ≤ n coprime to n (n ≤ 10⁹)
+- `/divisors n` — all positive divisors of n, paginated if >30 (n ≤ 10¹²)
+- `/is_perfect n` — checks if n equals the sum of its proper divisors
+- `/mobius n` — Möbius function μ(n): returns −1, 0, or 1 with plain-language label
+- `/chinese_remainder remainders moduli` — solves x ≡ rᵢ (mod mᵢ) via CRT
 
 ### Geometry (`cogs/geometry.py`)
 - `/circle_area radius`, `/circle_circumference radius`
@@ -324,7 +334,9 @@ via `@app_commands.checks.cooldown`.
 - `/truth_table expression` — boolean truth table
 - `/set_ops set_a set_b operation` — union/intersection/difference/etc.
   on comma-separated sets
-- `/binomial_coeff n` — nth row of Pascal's triangle
+- `/binomial_coeff n` — nth row of Pascal's triangle (n ≤ 20)
+- `/simplify_bool expression [form]` — simplify a boolean expression; optional `form` chooses Simplified (default), DNF, or CNF
+- `/logic_equiv expression_a expression_b` — check whether two boolean expressions are logically equivalent; returns a counterexample when not equivalent
 
 ### Symbolic (`cogs/symbolic.py`)
 - `/latex expression` — render as a LaTeX PNG
@@ -332,6 +344,7 @@ via `@app_commands.checks.cooldown`.
   `substitutions: "x=2, y=pi"`
 - `/partial_fraction expression` — partial fraction decomposition
 - `/roots expression` — all roots, set equal to zero
+- `/identify expression [variable]` — classify an expression: polynomial (with degree), rational function, trigonometric, exponential, logarithmic, even/odd function, periodic (with period), or constant. Multiple labels are additive. Runs in a thread-pool executor with a 5-second timeout.
 
 ### Equations (`cogs/equations.py`)
 - `/solve_sim equations [variables]` — solve a system of equations
@@ -354,7 +367,7 @@ via `@app_commands.checks.cooldown`.
 - `/clear_history` — clear it (confirmation view, owner-restricted)
 - `/constants` — reference list of π, e, φ, √2, i, ∞ with 10-place decimals
 - `/help_math` — paginated command listing grouped by cog
-- `/convert value from to` — unit conversion (length, mass, temperature)
+- `/convert value from to` — unit conversion across 10 categories (length, mass, temperature, time, area, volume, speed, force, energy, power)
 - `/about` — bot info
 
 ### Rendering (`cogs/render.py`)
@@ -377,16 +390,7 @@ via `@app_commands.checks.cooldown`.
 
 Ordered by severity / actionability.
 
-**1. Plotting expressions bypass `parser.py`'s validation entirely.**
-`utils/expr_utils.py::_sympy_expr()` calls `sympy.sympify()` directly with
-no length check and no `FORBIDDEN_KEYWORDS` filter, and is the parser for
-every field in the `/plot` builder (300-char modal inputs). `parse_expr`/
-`sympify` parse by `eval()`-ing the (transformed) string against a globals
-dict that isn't builtins-restricted. `cogs/calculus.py::_parse_point` and
-a substitution parser in `cogs/symbolic.py` also call `sympy.sympify`
-directly, on narrower single-value input. Fix: route all three through
-`parse_expression()`, or at minimum reuse `_validate_raw()` before calling
-`sympify` in each case.
+**1. ~~Plotting expressions bypass `parser.py`'s validation entirely.~~** ✅ **Resolved.** `utils/expr_utils.py::_sympy_expr()` now calls `_validate_raw()` from `parser.py` before calling `sympify`, applying the same length cap and forbidden-keyword filter as the main expression parser. The two remaining direct-`sympify` call sites (`cogs/calculus.py::_parse_point` and the substitution-value parser in `cogs/symbolic.py`) remain narrow single-value cases and are lower priority.
 
 **2. No per-user `interaction_check` on shared interactive views.**
 `PlotEngineView`
@@ -413,22 +417,9 @@ mislabels it as `cogs/utility.py`, suggesting it was an earlier
 draft left behind after the real cog was finished elsewhere. Safe to
 delete.
 
-**5. `.gitignore` doesn't actually ignore `__pycache__`.** The pattern is
-`/__pycache__` (leading slash → repo-root only), so
-`cogs/__pycache__`, `utils/__pycache__`, and `data/__pycache__` are not
-matched and their `.pyc` files (23 of them) are tracked in git. A stray
-~970 KB PNG (`utils/ChatGPT Image Jun 15, 2026, 11_57_30 AM.png`) is also
-committed inside `utils/` and doesn't appear to belong in the codebase.
-Fix: change the pattern to `__pycache__` (no leading slash), then
-`git rm -r --cached` the tracked cache directories and the stray image.
+**5. `.gitignore` pattern scope.** The original pattern `/__pycache__` (leading slash) only matched the repo root. This has been corrected to `__pycache__/` (no leading slash), which now matches all subdirectory caches. A stray ~970 KB PNG (`utils/ChatGPT Image Jun 15, 2026, 11_57_30 AM.png`) is still committed inside `utils/` — it doesn't belong in the codebase and should be removed with `git rm`.
 
-**6. Narrow exception handling in several cogs.** `arithmetic.py`,
-parts of `calculus.py`, and `symbolic.py` only catch `ValueError` around
-SymPy calls. Anything else SymPy raises (`PolynomialError`,
-`NotImplementedError` on some integrals, etc.) isn't caught locally and
-falls through to `main.py`'s generic "something went wrong" handler
-instead of a specific, useful error message — not a crash risk (the
-global handler catches it), but a UX gap.
+**6. ~~Narrow exception handling in several cogs.~~** ✅ **Resolved.** `arithmetic.py`, `calculus.py`, and `symbolic.py` now catch `ValueError`, `sympy.SympifyError`, `sympy.PolynomialError`, `NotImplementedError`, and a broad `Exception` fallback in each command, surfacing specific SymPy error messages rather than the generic "something went wrong" handler.
 
 **7. `latex2sympy2` dependency.** Used for LaTeX-format parsing in
 `parser.py`; less actively maintained than core SymPy and has an
@@ -520,12 +511,11 @@ detecting piecewise syntax (presence of both `:` and `|`) to delegate to
 `_clean_piecewise_expr()`, which splits on `|`, requires a `:` in each
 segment, and reassembles the pieces into SymPy's
 `Piecewise((expr, cond), ...)` constructor call as a string. `_sympy_expr()`
-is a thin wrapper around `sympy.sympify()` that builds a `locals` dict
-mapping each symbol's string name to the actual `sympy.Symbol` object
-(so `x`, `y`, `t`, etc. resolve to the same symbol instances the caller
-already created) plus an explicit `Piecewise` entry — but, unlike
-`parser.py`, performs no length or keyword validation before calling
-`sympify`.
+now calls `_validate_raw()` from `parser.py` before calling `sympify`,
+applying the same length and forbidden-keyword checks as the main
+expression parser. It then builds a `locals` dict mapping each symbol's
+string name to the actual `sympy.Symbol` object plus an explicit
+`Piecewise` entry — closing the Known Issue §1 gap for the plotting path.
 
 ### `utils/solver.py`
 
@@ -700,6 +690,14 @@ tuple AST; `_evaluate_boolean()` then walks that AST recursively against
 a `{variable: bool}` dict. The result is a fully sandboxed boolean
 evaluator with no `eval()`/`sympify()` anywhere in the path — a useful
 contrast with the SymPy-based parsers elsewhere in the project.
+
+`_ast_to_sympy()` / `_bool_str_to_sympy()` extend this same AST one step
+further: rather than evaluating to a Python `bool`, they convert the AST
+into a SymPy logic expression (`And`, `Or`, `Not`, `Xor`, `Implies`)
+ready for `simplify_logic`, `to_dnf`, `to_cnf`, or `satisfiable`. This
+bridges the hand-rolled parser into SymPy's logic layer without ever
+passing user input through `eval()`.
+
 Supporting helpers: `_format_large_int()` (falls back to scientific
 notation above a configurable digit threshold so `1000!` doesn't blow
 out an embed field), `_build_truth_table_lines()` /
@@ -708,6 +706,11 @@ fit Discord's field limit), and `_parse_set_element()` /`_parse_set()` /
 `_format_set()` for the comma-separated set-operation commands
 (`_parse_set_element` tries `int` → `float` → raw string, in that order,
 so `"1, 2.5, apple"` parses each element as specifically as possible).
+
+Commands: `/permutation`, `/combination`, `/truth_table`, `/set_ops`,
+`/binomial_coeff`, `/simplify_bool` (simplifies or converts to DNF/CNF;
+form is an autocomplete choice), `/logic_equiv` (checks equivalence via
+XOR satisfiability and returns a counterexample witness when not equivalent).
 
 ### `cogs/equations.py`
 
@@ -751,17 +754,27 @@ from the JSON string to a `sympy.Matrix`.
 
 The most helper-function-heavy cog. `_superscript()` (digit → Unicode
 superscript, used by `_format_factorisation` to render `2³ × 3² × 5¹`),
-`_parse_integers()`, `_validate_int_arg()` (generic `[lo, hi]` range
-validation reused across most commands), `_list_gcd()`/`_list_lcm()`
+`_parse_integers()`, `_parse_single_integer()` (single-integer variant, used by
+newly-added commands), `_validate_int_arg()` (generic `[lo, hi]` range
+validation reused across all commands), `_list_gcd()`/`_list_lcm()`
 (iterative pairwise reduction over `math.gcd`/`lcm` rather than a single
 n-ary call, so the running result can be short-circuited early if it
 ever hits 1), `_fibonacci_list()`, and `_paginate_list()` (generic
-page-splitting used by `/primes_up_to` and `/fibonacci` for large `n`).
-Every numeric command enforces an explicit upper bound (`is_prime` ≤
+page-splitting used by `/primes_up_to`, `/fibonacci`, and `/divisors` for
+large `n`). Every numeric command enforces an explicit upper bound (`is_prime` ≤
 10¹², `factorize` ≤ 10¹⁵, `primes_up_to`/`fibonacci` capped via
-module constants) specifically to bound compute time, since none of
-these go through `parser.py`'s `COMPUTE_TIMEOUT` guard — they're raw
-Python integer arithmetic, not SymPy parsing.
+module constants, `totient` ≤ 10⁹, `divisors`/`is_perfect`/`mobius` ≤ 10¹²)
+specifically to bound compute time, since none of these go through
+`parser.py`'s `COMPUTE_TIMEOUT` guard — they're raw Python/SymPy integer
+arithmetic, not expression parsing.
+
+Newly added commands (T1-6): `/totient` uses `sympy.totient`; `/divisors`
+uses `sympy.divisors` and paginates if the list exceeds 30 entries;
+`/is_perfect` computes `sum(divisors[:-1]) == n`; `/mobius` uses
+`sympy.mobius` and provides a plain-language interpretation of the −1/0/1
+return value alongside the prime factorisation; `/chinese_remainder` uses
+`sympy.ntheory.modular.crt` (lazy import at call time) and validates
+that the system has a solution before reporting it.
 
 ### `cogs/plot_engine.py`
 
@@ -802,26 +815,46 @@ on whether they're more comfortable writing LaTeX or plain expressions.
 ### `cogs/statistics.py`
 
 Module-level `parse_numbers()` (comma-separated → `list[float]`, used by
-nearly every command in the cog) plus three more specialized helpers:
+nearly every command in the cog) plus specialized helpers:
 `_correlation_label()` (maps a Pearson *r* value to a human-readable
-strength description — "strong", "moderate", etc.), and
-`_regression_plot_bytes()`. `/normal_pdf`, `/normal_cdf`, `/inv_normal`,
-`/binomial_cdf`, and `/poisson_cdf` build their matplotlib figures by relying
-on `scipy.stats` distributions (e.g. `norm`, `binom`, `poisson`) and the headless
-`Agg` backend. These plots are run in a thread-pool executor to prevent blocking the async loop.
+strength description — "strong", "moderate", etc.),
+`_regression_plot_bytes()`, and five private plot-byte generators:
+`_normal_pdf_bytes`, `_normal_cdf_bytes`, `_inv_normal_bytes`,
+`_binomial_cdf_bytes`, `_poisson_cdf_bytes`. All plot functions use
+`scipy.stats` distributions and the headless `Agg` matplotlib backend,
+run in a thread-pool executor.
+
+Newly added (T1-1): **`_DIST_PARAMS`** (a registry dict mapping each
+distribution name to its ordered parameter list) and **`_parse_dist_params`**
+(parses a comma-separated param string into a named dict with count and
+type validation). The **`/distribution`** unified command uses these to
+dispatch to the same five plot-byte generators as the deprecated individual
+commands, so there is zero duplication of computation logic. Old commands
+(`/normal_pdf`, `/normal_cdf`, `/inv_normal`, `/binomial_cdf`,
+`/poisson_cdf`) are retained with `[DEPRECATED]` in their descriptions for
+backward compatibility.
 
 ### `cogs/symbolic.py`
 
 `_parse_substitutions()` (splits a `"x=2, y=pi"` string on commas, then
 each entry on its first `=`, validating that the left side is a legal
 Python identifier via `str.isidentifier()` before calling
-`sympy.sympify()` on the right-hand value — the second direct-`sympify`
-call site noted in Known Issues §1) and `_root_line()` (formats one root
+`sympy.sympify()` on the right-hand value — one of the remaining direct-`sympify`
+call sites) and `_root_line()` (formats one root
 with a "real"/"complex" complexity tag for the `/roots` command's
-output). `SymbolicCog` holds four commands; `/subs` is the only one that
-needs its own substitution-string grammar rather than reusing
-`parse_expression`, since a substitution map isn't itself a single
-expression.
+output).
+
+Newly added (T1-7): **`_identify_expression(expr, var)`** — a synchronous
+classification helper that checks for polynomial (via `sympy.Poly`, extracting
+degree), rational function (non-trivial denominator after `sympy.cancel`),
+trigonometric (atom scan across 12 trig functions), exponential/logarithmic
+(atom scans), even/odd symmetry (substituting `f(-x)` and comparing via
+`sympy.simplify`), periodic (via `sympy.periodicity`), and constant (inspecting
+`free_symbols`). Classifications are additive — an expression can carry multiple
+labels. The **`/identify`** command runs this helper in `loop.run_in_executor`
+with a 5-second timeout, since `sympy.periodicity` and `simplify` can be slow.
+`SymbolicCog` now holds five commands: `/latex`, `/subs`, `/partial_fraction`,
+`/roots`, `/identify`.
 
 ### `cogs/utility.py`
 

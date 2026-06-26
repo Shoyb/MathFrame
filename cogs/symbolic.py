@@ -7,8 +7,10 @@ Commands
 /subs             expression  substitutions   Substitute values into an expression.
 /partial_fraction expression  [variable]      Partial fraction decomposition.
 /roots            expression  [variable]      Find all roots of an expression.
+/identify         expression  [variable]      Classify an expression (polynomial, trig, even/odd, …).
 """
 
+import asyncio
 import sympy
 import discord
 from discord import app_commands
@@ -119,11 +121,111 @@ def _root_line(var: sympy.Symbol, root: sympy.Basic, mult: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Expression identifier (T1-7)
+# ---------------------------------------------------------------------------
+
+def _identify_expression(expr: sympy.Expr, var: sympy.Symbol) -> list[str]:
+    """
+    Classify *expr* into one or more human-readable categories.
+
+    Categories checked (all are additive — an expression may match several)
+    -------------------------------------------------------------------------
+    * Polynomial (degree n)
+    * Rational function
+    * Trigonometric
+    * Exponential
+    * Logarithmic
+    * Even function  / Odd function
+    * Periodic (with period)
+    * Constant (with numeric approximation)
+
+    Parameters
+    ----------
+    expr:
+        The SymPy expression to classify.
+    var:
+        The primary variable symbol.
+
+    Returns
+    -------
+    list[str]
+        Bullet-ready label strings.
+    """
+    tags: list[str] = []
+
+    # 1. Polynomial check
+    try:
+        poly = sympy.Poly(expr, var)
+        deg = poly.degree()
+        if deg == 0:
+            tags.append(f"Polynomial (degree 0 — constant in {var})")
+        else:
+            tags.append(f"Polynomial (degree {deg})")
+    except sympy.PolynomialError:
+        pass
+
+    # 2. Rational function check (has a non-trivial denominator after cancel)
+    try:
+        _, denom = sympy.fraction(sympy.cancel(expr))
+        if denom != 1 and denom != sympy.Integer(1):
+            tags.append("Rational function")
+    except Exception:
+        pass
+
+    # 3. Trig atoms
+    trig_funcs = (sympy.sin, sympy.cos, sympy.tan,
+                  sympy.cot, sympy.sec, sympy.csc,
+                  sympy.asin, sympy.acos, sympy.atan,
+                  sympy.sinh, sympy.cosh, sympy.tanh)
+    if expr.atoms(*trig_funcs):
+        tags.append("Trigonometric")
+
+    # 4. Exponential atoms
+    if expr.atoms(sympy.exp):
+        tags.append("Exponential")
+
+    # 5. Logarithmic atoms
+    if expr.atoms(sympy.log):
+        tags.append("Logarithmic")
+
+    # 6. Even / Odd symmetry
+    try:
+        neg_expr = expr.subs(var, -var)
+        if sympy.simplify(neg_expr - expr) == 0:
+            tags.append("Even function  f(−x) = f(x)")
+        elif sympy.simplify(neg_expr + expr) == 0:
+            tags.append("Odd function  f(−x) = −f(x)")
+    except Exception:
+        pass
+
+    # 7. Periodicity
+    try:
+        period = sympy.periodicity(expr, var)
+        if period is not None and period != 0:
+            tags.append(f"Periodic  (period = {period})")
+    except Exception:
+        pass
+
+    # 8. Constant (no free symbols)
+    if not expr.free_symbols:
+        try:
+            numeric = complex(sympy.N(expr))
+            if abs(numeric.imag) < 1e-10:
+                tags.append(f"Constant  ≈ {numeric.real:.6g}")
+            else:
+                tags.append(f"Constant  ≈ {numeric.real:.6g} + {numeric.imag:.6g}i")
+        except Exception:
+            tags.append("Constant")
+
+    return tags if tags else ["No standard classification found"]
+
+
+# ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 
 class SymbolicCog(commands.Cog, name="Symbolic"):
-    """Symbolic math commands: LaTeX rendering, substitution, partial fractions, roots."""
+    """Symbolic math commands: LaTeX rendering, substitution, partial fractions, roots, expression identification."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -310,6 +412,86 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
         except NotImplementedError:
             await interaction.followup.send(
                 embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
+
+    # -----------------------------------------------------------------------
+    # /identify  (T1-7)
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="identify",
+        description="Classify an expression: polynomial, trig, exponential, even/odd, periodic, and more.",
+    )
+    @app_commands.describe(
+        expression="Expression to classify, e.g. sin(x) or x^4 - 2x^2",
+        variable="Main variable for classification (default: x)",
+    )
+    @app_commands.checks.cooldown(1, 5.0)
+    async def identify(
+        self,
+        interaction: discord.Interaction,
+        expression: str,
+        variable: str = "x",
+    ) -> None:
+        """
+        Classify *expression* by its mathematical properties.
+
+        The command is intentionally broad — an expression can carry multiple
+        labels simultaneously (e.g. ``sin(x)`` is Trigonometric, Odd, and
+        Periodic).
+
+        Examples
+        --------
+        ``x^2``             → Polynomial (degree 2), Even function
+        ``sin(x)``          → Trigonometric, Odd function, Periodic (2π)
+        ``1/x``             → Rational function
+        ``e^x``             → Exponential
+        ``pi``              → Constant ≈ 3.14159
+        """
+        await interaction.response.defer()
+        try:
+            expr = await parse_expression(expression)
+            var  = sympy.Symbol(variable)
+
+            # Run the classification in the thread-pool executor because
+            # sympy.periodicity and sympy.simplify can be slow.
+            loop = asyncio.get_event_loop()
+            try:
+                tags = await asyncio.wait_for(
+                    loop.run_in_executor(None, _identify_expression, expr, var),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    embed=error_embed(
+                        "Classification timed out (>5 s). "
+                        "Try a simpler expression or a specific variable."
+                    )
+                )
+                return
+
+            bullet_list = "\n".join(f"• {t}" for t in tags)
+
+            embed = math_embed(
+                title="Expression Identity",
+                result=bullet_list,
+                steps=[
+                    ("Expression", str(expr)),
+                    ("Variable",   variable),
+                ],
+                footer=f"{len(tags)} classification(s) found",
+            )
+            await interaction.followup.send(embed=embed)
+
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Could not parse expression: {exc}")
             )
         except Exception as exc:
             await interaction.followup.send(

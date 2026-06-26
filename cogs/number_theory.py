@@ -3,13 +3,18 @@ cogs/number_theory.py — Number theory slash commands for the math bot.
 
 Commands
 --------
-/gcd            numbers             GCD of a list of integers.
-/lcm            numbers             LCM of a list of integers.
-/is_prime       n                   Primality test with factorisation fallback.
-/factorize      n                   Prime factorisation in superscript notation.
-/primes_up_to   n                   All primes up to n (capped, paginated).
-/modular        base  exp  mod      Modular exponentiation.
-/fibonacci      n                   First n Fibonacci numbers (paginated if large).
+/gcd              numbers             GCD of a list of integers.
+/lcm              numbers             LCM of a list of integers.
+/is_prime         n                   Primality test with factorisation fallback.
+/factorize        n                   Prime factorisation in superscript notation.
+/primes_up_to     n                   All primes up to n (capped, paginated).
+/modular          base  exp  mod      Modular exponentiation.
+/fibonacci        n                   First n Fibonacci numbers (paginated if large).
+/totient          n                   Euler's totient φ(n).
+/divisors         n                   All divisors of n.
+/is_perfect       n                   Check if n is a perfect number.
+/mobius           n                   Möbius function μ(n).
+/chinese_remainder remainders moduli  Chinese Remainder Theorem.
 """
 
 import math
@@ -33,6 +38,9 @@ _PRIMES_UPTO_CAP: Final[int] = 10_000
 _PRIMES_SHOW_MAX: Final[int] = 50
 _FIB_CAP:         Final[int] = 200
 _FIB_PAGE_SIZE:   Final[int] = 20
+_TOTIENT_CAP:     Final[int] = 10 ** 9
+_DIVISORS_CAP:    Final[int] = 10 ** 12
+_DIVISORS_PAGE:   Final[int] = 30   # paginate divisor lists longer than this
 
 # Unicode superscript digits 0-9
 _SUPERSCRIPTS: dict[str, str] = str.maketrans(
@@ -97,6 +105,26 @@ def _parse_integers(s: str, param_name: str = "numbers") -> list[int]:
     if len(results) < 2:
         raise ValueError(f"At least 2 integers are required (got {len(results)}).")
     return results
+
+
+def _parse_single_integer(s: str, param_name: str = "n") -> int:
+    """
+    Parse a single integer from a user-supplied string.
+
+    Raises
+    ------
+    ValueError
+        If the string is not a valid integer.
+    """
+    s = s.strip()
+    if not s:
+        raise ValueError(f"`{param_name}` is empty.")
+    if "." in s:
+        raise ValueError(f"`{s}` is a decimal — only integers are accepted.")
+    try:
+        return int(s)
+    except ValueError:
+        raise ValueError(f"Cannot convert `{s}` to an integer.")
 
 
 def _validate_int_arg(value: int, name: str, lo: int | None = None, hi: int | None = None) -> None:
@@ -207,7 +235,7 @@ def _paginate_list(
 # ---------------------------------------------------------------------------
 
 class NumberTheoryCog(commands.Cog, name="Number Theory"):
-    """GCD, LCM, primality, factorisation, modular arithmetic, and Fibonacci."""
+    """GCD, LCM, primality, factorisation, modular arithmetic, Fibonacci, and number-theoretic functions."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -466,6 +494,226 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
 
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /totient  (T1-6)
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="totient",
+        description="Compute Euler's totient φ(n) — the count of integers up to n coprime to n.",
+    )
+    @app_commands.describe(n=f"Positive integer (max {_TOTIENT_CAP:,})")
+    @app_commands.checks.cooldown(1, 2.0)
+    async def totient(self, interaction: discord.Interaction, n: int) -> None:
+        await interaction.response.defer()
+        try:
+            _validate_int_arg(n, "n", lo=1, hi=_TOTIENT_CAP)
+            result = sympy.totient(n)
+            embed = math_embed(
+                title="Euler's Totient Function",
+                result=f"φ({n:,}) = {result:,}",
+                steps=[
+                    ("Definition", "φ(n) = count of integers k ≤ n with gcd(k, n) = 1"),
+                    ("Input",      f"n = {n:,}"),
+                    ("Result",     f"φ({n:,}) = {result:,}"),
+                ],
+                footer=f"Computed using Euler's product formula over prime factors of {n:,}",
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /divisors  (T1-6)
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="divisors",
+        description="List all positive divisors of n.",
+    )
+    @app_commands.describe(n=f"Positive integer (max {_DIVISORS_CAP:,})")
+    @app_commands.checks.cooldown(1, 2.0)
+    async def divisors(self, interaction: discord.Interaction, n: int) -> None:
+        await interaction.response.defer()
+        try:
+            _validate_int_arg(n, "n", lo=1, hi=_DIVISORS_CAP)
+            divs = sympy.divisors(n)
+            total = len(divs)
+            div_strs = [str(d) for d in divs]
+            footer_prefix = f"{total} divisor(s) of {n:,}"
+
+            if total <= _DIVISORS_PAGE:
+                embed = math_embed(
+                    title=f"Divisors of {n:,}",
+                    result=",  ".join(div_strs),
+                    footer=footer_prefix,
+                )
+                await interaction.followup.send(embed=embed)
+            else:
+                pages = _paginate_list(
+                    items=div_strs,
+                    page_size=_DIVISORS_PAGE,
+                    title=f"Divisors of {n:,}",
+                    footer_prefix=footer_prefix,
+                )
+                await send_paginated(interaction, pages)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /is_perfect  (T1-6)
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="is_perfect",
+        description="Check whether n is a perfect number (equals the sum of its proper divisors).",
+    )
+    @app_commands.describe(n=f"Positive integer (max {_DIVISORS_CAP:,})")
+    @app_commands.checks.cooldown(1, 2.0)
+    async def is_perfect(self, interaction: discord.Interaction, n: int) -> None:
+        await interaction.response.defer()
+        try:
+            _validate_int_arg(n, "n", lo=1, hi=_DIVISORS_CAP)
+            divs = sympy.divisors(n)
+            proper_sum = sum(divs[:-1])   # all divisors except n itself
+            perfect = (n > 1) and (proper_sum == n)
+
+            if perfect:
+                result_str = f"✅  Yes, {n:,} is a perfect number."
+                footer = f"Sum of proper divisors = {proper_sum:,} = {n:,}"
+            else:
+                result_str = f"❌  No, {n:,} is not a perfect number."
+                footer = f"Sum of proper divisors = {proper_sum:,} ≠ {n:,}"
+
+            embed = math_embed(
+                title="Perfect Number Test",
+                result=result_str,
+                steps=[
+                    ("Definition",           "A perfect number equals the sum of its proper divisors."),
+                    ("Proper divisors of n",  ", ".join(str(d) for d in divs[:-1]) if len(divs) <= 20
+                                             else f"{len(divs)-1} divisors (too many to list)"),
+                    ("Sum of proper divisors", f"{proper_sum:,}"),
+                    ("Verdict",              result_str),
+                ],
+                footer=footer,
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /mobius  (T1-6)
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="mobius",
+        description="Compute the Möbius function μ(n): returns −1, 0, or 1.",
+    )
+    @app_commands.describe(n=f"Positive integer (max {_DIVISORS_CAP:,})")
+    @app_commands.checks.cooldown(1, 2.0)
+    async def mobius(self, interaction: discord.Interaction, n: int) -> None:
+        await interaction.response.defer()
+        try:
+            _validate_int_arg(n, "n", lo=1, hi=_DIVISORS_CAP)
+            mu = sympy.mobius(n)
+
+            if mu == 0:
+                label = "0  (n has a squared prime factor)"
+            elif mu == 1:
+                label = "1  (n = 1 or n has an even number of distinct prime factors)"
+            else:
+                label = "−1  (n has an odd number of distinct prime factors)"
+
+            factors = sympy.factorint(n)
+
+            embed = math_embed(
+                title="Möbius Function μ(n)",
+                result=f"μ({n:,}) = {label}",
+                steps=[
+                    ("Factorisation",   _format_factorisation(factors)),
+                    ("μ(n) value",      label),
+                ],
+                footer="μ(n) is 0 if n has a squared prime factor; else (−1)^k where k = number of distinct primes",
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /chinese_remainder  (T1-6)
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="chinese_remainder",
+        description="Solve a system of congruences using the Chinese Remainder Theorem.",
+    )
+    @app_commands.describe(
+        remainders="Comma-separated remainders, e.g. '2, 3, 1'",
+        moduli="Comma-separated moduli (must be pairwise coprime), e.g. '3, 5, 7'",
+    )
+    @app_commands.checks.cooldown(1, 2.0)
+    async def chinese_remainder(
+        self,
+        interaction: discord.Interaction,
+        remainders: str,
+        moduli: str,
+    ) -> None:
+        """
+        Solve the system  x ≡ rᵢ (mod mᵢ)  for all i.
+
+        Uses :func:`sympy.ntheory.modular.crt` which requires the moduli to
+        be pairwise coprime.  Returns the unique solution modulo lcm(mᵢ).
+        """
+        await interaction.response.defer()
+        try:
+            from sympy.ntheory.modular import crt
+
+            rs = _parse_integers(remainders, "remainders")
+            ms = _parse_integers(moduli, "moduli")
+
+            if len(rs) != len(ms):
+                raise ValueError(
+                    f"Number of remainders ({len(rs)}) must match number of moduli ({len(ms)})."
+                )
+            if any(m <= 0 for m in ms):
+                raise ValueError("All moduli must be positive integers.")
+
+            result, lcm_val = crt(ms, rs, symmetric=False)
+
+            if result is None:
+                raise ValueError(
+                    "No solution exists. "
+                    "Check that the moduli are pairwise coprime and remainders are valid."
+                )
+
+            congruences = "  ∧  ".join(
+                f"x ≡ {r} (mod {m})" for r, m in zip(rs, ms)
+            )
+            embed = math_embed(
+                title="Chinese Remainder Theorem",
+                result=f"x ≡ {result} (mod {lcm_val})",
+                steps=[
+                    ("System",    congruences),
+                    ("Solution",  f"x ≡ {result} (mod {lcm_val})"),
+                    ("LCM of moduli", f"{lcm_val:,}"),
+                ],
+                footer=f"Remainders: {rs}  |  Moduli: {ms}  |  Solution is unique mod {lcm_val:,}",
+            )
+            await interaction.followup.send(embed=embed)
+
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An error occurred: {exc}"))
 
 
 # ---------------------------------------------------------------------------

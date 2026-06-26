@@ -7,7 +7,7 @@ Commands
 /clear_history    Clear your calculation history (with confirmation).
 /constants        Reference embed of common mathematical constants.
 /help_math        Paginated list of every bot command, grouped by category.
-/convert          Convert between units of length, mass, or temperature.
+/convert          Convert between units (length, mass, temp, time, area, volume, speed, etc).
 /units            Convert any expression with units (compound / derived).
 /about            Bot version, library versions, guild count, and uptime.
 
@@ -111,17 +111,94 @@ _MASS_UNITS: dict[str, sympy.Basic] = {
 _TEMP_UNITS: set[str] = {"c", "f", "k"}
 _TEMP_NAMES: dict[str, str] = {"c": "Celsius", "f": "Fahrenheit", "k": "Kelvin"}
 
+_TIME_UNITS: dict[str, sympy.Basic] = {
+    "s": spu.second,
+    "min": spu.minute,
+    "hr": spu.hour,
+    "day": spu.day,
+    "week": 7 * spu.day,
+    "year": spu.year,
+}
+
+_AREA_UNITS: dict[str, sympy.Basic] = {
+    "m2": spu.meter**2,
+    "km2": spu.kilometer**2,
+    "cm2": spu.centimeter**2,
+    "hectare": spu.hectare,
+    "acre": 43560 * spu.foot**2,
+    "sq_ft": spu.foot**2,
+    "sq_mile": spu.mile**2,
+}
+
+_VOLUME_UNITS: dict[str, sympy.Basic] = {
+    "l": spu.liter,
+    "ml": spu.milliliter,
+    "m3": spu.meter**3,
+    "cm3": spu.centimeter**3,
+    "gal": sympy.Rational(378541, 100000) * spu.liter,
+    "qt": sympy.Rational(378541, 400000) * spu.liter,
+    "pt": sympy.Rational(378541, 800000) * spu.liter,
+    "cup": sympy.Rational(378541, 1600000) * spu.liter,
+    "fl_oz": sympy.Rational(378541, 12800000) * spu.liter,
+}
+
+_SPEED_UNITS: dict[str, sympy.Basic] = {
+    "mps": spu.meter / spu.second,
+    "kph": spu.kilometer / spu.hour,
+    "mph": spu.mile / spu.hour,
+    "knot": sympy.Rational(1852, 1000) * (spu.kilometer / spu.hour),
+    "fps": spu.foot / spu.second,
+}
+
+_FORCE_UNITS: dict[str, sympy.Basic] = {
+    "n": spu.newton,
+    "lbf": sympy.Rational(4448222, 1000000) * spu.newton,
+    "dyne": sympy.Rational(1, 100000) * spu.newton,
+}
+
+_ENERGY_UNITS: dict[str, sympy.Basic] = {
+    "j": spu.joule,
+    "kj": spu.kilo * spu.joule,
+    "cal": sympy.Rational(4184, 1000) * spu.joule,
+    "kcal": 4184 * spu.joule,
+    "wh": 3600 * spu.joule,
+    "kwh": 3600000 * spu.joule,
+    "btu": sympy.Rational(105506, 100) * spu.joule,
+    "ev": spu.electronvolt,
+}
+
+_POWER_UNITS: dict[str, sympy.Basic] = {
+    "w": spu.watt,
+    "kw": spu.kilo * spu.watt,
+    "mw": spu.mega * spu.watt,
+    "hp": sympy.Rational(7457, 10) * spu.watt,
+}
+
 # unit-key → (category, sympy Quantity | None for temperature)
 _UNIT_CATEGORIES: dict[str, tuple[str, sympy.Basic | None]] = {
     **{key: ("length",      q)    for key, q in _LENGTH_UNITS.items()},
     **{key: ("mass",        q)    for key, q in _MASS_UNITS.items()},
     **{key: ("temperature", None) for key in _TEMP_UNITS},
+    **{key: ("time",        q)    for key, q in _TIME_UNITS.items()},
+    **{key: ("area",        q)    for key, q in _AREA_UNITS.items()},
+    **{key: ("volume",      q)    for key, q in _VOLUME_UNITS.items()},
+    **{key: ("speed",       q)    for key, q in _SPEED_UNITS.items()},
+    **{key: ("force",       q)    for key, q in _FORCE_UNITS.items()},
+    **{key: ("energy",      q)    for key, q in _ENERGY_UNITS.items()},
+    **{key: ("power",       q)    for key, q in _POWER_UNITS.items()},
 }
 
 _SUPPORTED_UNITS_STR = (
     "length: m, km, cm, ft, mile, inch  |  "
     "mass: kg, g, lb, oz  |  "
-    "temperature: C, F, K"
+    "temperature: C, F, K  |  "
+    "time: s, min, hr, day, week, year  |  "
+    "area: m2, km2, cm2, hectare, acre, sq_ft, sq_mile  |  "
+    "volume: l, ml, m3, cm3, gal, qt, pt, cup, fl_oz  |  "
+    "speed: mps, kph, mph, knot, fps  |  "
+    "force: n, lbf, dyne  |  "
+    "energy: j, kj, cal, kcal, wh, kwh, btu, ev  |  "
+    "power: w, kw, mw, hp"
 )
 
 # ---------------------------------------------------------------------------
@@ -474,11 +551,11 @@ class UtilityCog(commands.Cog, name="Utility"):
 
     @app_commands.command(
         name="convert",
-        description="Convert a value between units of length, mass, or temperature.",
+        description="Convert a value between units (length, mass, temp, time, area, volume, speed, force, energy, power).",
     )
     @app_commands.describe(
         value     = "Numeric value to convert",
-        from_unit = "Unit to convert from: m, km, cm, ft, mile, inch, kg, g, lb, oz, C, F, K",
+        from_unit = "Unit to convert from (e.g. m, kg, C, s, m2, l, mph, n, j, w)",
         to_unit   = "Unit to convert to (must be the same category as from_unit)",
     )
     @app_commands.checks.cooldown(1, 2.0)

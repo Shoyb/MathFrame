@@ -34,6 +34,7 @@ COGS: list[str] = [
     "cogs.admin",
     "cogs.arithmetic",
     "cogs.calculus",
+    "cogs.transforms",
     "cogs.linear_algebra",
     "cogs.statistics",
     "cogs.number_theory",

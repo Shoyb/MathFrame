@@ -11,6 +11,7 @@ Commands
 /table        expression ...       Generate a value table for f(x) over a range.
 /poly_div     dividend divisor     Polynomial division (quotient & remainder).
 /verify       expr_a expr_b        Check if two expressions are mathematically equivalent.
+/compare      expr_f expr_g        Side-by-side comparison of two functions.
 
 All commands defer immediately, pull from / write to the in-memory TTL cache,
 and surface errors through a consistent red error embed.
@@ -723,6 +724,79 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
                 embed=error_embed(f"An unexpected error occurred: {exc}")
             )
 
+    # -----------------------------------------------------------------------
+    # /compare
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="compare",
+        description="Side-by-side comparison of two functions.",
+    )
+    @app_commands.describe(
+        expr_f="First function, e.g. x**2 - 1",
+        expr_g="Second function, e.g. (x - 1)*(x + 1)",
+    )
+    @app_commands.checks.cooldown(1, 4.0)
+    async def compare(
+        self,
+        interaction: discord.Interaction,
+        expr_f: str,
+        expr_g: str,
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            f = await parse_expression(expr_f)
+            g = await parse_expression(expr_g)
+            
+            loop = asyncio.get_running_loop()
+            
+            def _analyze() -> tuple[sympy.Expr, sympy.Expr, sympy.Expr, bool]:
+                f_simp = sympy.simplify(f)
+                g_simp = sympy.simplify(g)
+                diff = sympy.simplify(f - g)
+                equiv = (diff == 0)
+                return f_simp, g_simp, diff, equiv
+
+            f_simp, g_simp, diff, equiv = await loop.run_in_executor(None, _analyze)
+            
+            embed = discord.Embed(
+                title="Function Comparison",
+                color=discord.Color.green() if equiv else discord.Color.blue()
+            )
+            embed.add_field(name="Function f", value=f"`{f}`", inline=True)
+            embed.add_field(name="Function g", value=f"`{g}`", inline=True)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+            
+            embed.add_field(name="Simplified f", value=f"`{f_simp}`", inline=True)
+            embed.add_field(name="Simplified g", value=f"`{g_simp}`", inline=True)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+            
+            if not equiv:
+                embed.add_field(name="Difference (f - g)", value=f"`{diff}`", inline=False)
+                
+            embed.add_field(
+                name="Equivalence",
+                value="✅ Equivalent (f = g)" if equiv else "❌ Not Equivalent (f ≠ g)",
+                inline=False
+            )
+            
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
+        except sympy.PolynomialError as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
+            )
+        except NotImplementedError:
+            await interaction.followup.send(
+                embed=error_embed("SymPy couldn't find a closed form for this.")
+            )
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=error_embed(f"An unexpected error occurred: {exc}")
+            )
 
 # ---------------------------------------------------------------------------
 # Setup

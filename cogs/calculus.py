@@ -10,6 +10,9 @@ Commands
 /sum_series     expression variable [lower] [upper]         Evaluate a summation (Σ).
 /product_series expression variable [lower] [upper]         Evaluate a product (Π).
 /ode            expression [initial_conditions]             Solve a differential equation.
+/gradient       expression [variables]                      Compute the gradient ∇f.
+/divergence     expression [variables]                      Compute the divergence ∇·F.
+/curl           expression [variables]                      Compute the curl ∇×F.
 
 All commands defer immediately and surface errors through a consistent
 red error embed.  Computation-heavy calls run through the async parser
@@ -662,6 +665,160 @@ class CalculusCog(commands.Cog, name="Calculus"):
         except Exception as exc:
             await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
 
+    # -----------------------------------------------------------------------
+    # /gradient
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="gradient",
+        description="Compute the gradient of a scalar field ∇f.",
+    )
+    @app_commands.describe(
+        expression="Scalar function, e.g. x**2 + y**2",
+        variables="Comma-separated variables, e.g. x,y,z (default: x, y, z)",
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def gradient(
+        self,
+        interaction: discord.Interaction,
+        expression: str,
+        variables: str = "x, y, z",
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            expr = await parse_expression(expression)
+            vars_list = [sympy.Symbol(v.strip()) for v in variables.split(',')]
+            
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: [sympy.diff(expr, v) for v in vars_list]
+            )
+            
+            res_str = "[" + ", ".join(str(r) for r in result) + "]"
+            
+            embed = math_embed(
+                title="Gradient ∇f",
+                result=res_str,
+                steps=[
+                    ("Scalar Field f", str(expr)),
+                    ("Variables", ", ".join(v.name for v in vars_list)),
+                ]
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /divergence
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="divergence",
+        description="Compute the divergence of a vector field ∇·F.",
+    )
+    @app_commands.describe(
+        expression="Vector field as a list, e.g. [x*y, y*z, z*x]",
+        variables="Comma-separated variables, e.g. x,y,z (default: x, y, z)",
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def divergence(
+        self,
+        interaction: discord.Interaction,
+        expression: str,
+        variables: str = "x, y, z",
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            expr_list = await parse_expression(expression)
+            if not isinstance(expr_list, list):
+                raise ValueError("Expression must be a vector (e.g. enclosed in square brackets `[ ... ]`).")
+                
+            vars_list = [sympy.Symbol(v.strip()) for v in variables.split(',')]
+            
+            if len(expr_list) != len(vars_list):
+                raise ValueError(f"Number of vector components ({len(expr_list)}) must match number of variables ({len(vars_list)}).")
+            
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: sum(sympy.diff(comp, var) for comp, var in zip(expr_list, vars_list))
+            )
+            
+            embed = math_embed(
+                title="Divergence ∇·F",
+                result=str(result),
+                steps=[
+                    ("Vector Field F", "[" + ", ".join(str(c) for c in expr_list) + "]"),
+                    ("Variables", ", ".join(v.name for v in vars_list)),
+                ]
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /curl
+    # -----------------------------------------------------------------------
+
+    @app_commands.command(
+        name="curl",
+        description="Compute the curl of a 3D vector field ∇×F.",
+    )
+    @app_commands.describe(
+        expression="3D Vector field as a list, e.g. [x*y, y*z, z*x]",
+        variables="Comma-separated variables, e.g. x,y,z (default: x, y, z)",
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def curl(
+        self,
+        interaction: discord.Interaction,
+        expression: str,
+        variables: str = "x, y, z",
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            expr_list = await parse_expression(expression)
+            if not isinstance(expr_list, list):
+                raise ValueError("Expression must be a vector (e.g. enclosed in square brackets `[ ... ]`).")
+                
+            vars_list = [sympy.Symbol(v.strip()) for v in variables.split(',')]
+            
+            if len(expr_list) != 3 or len(vars_list) != 3:
+                raise ValueError("Curl is only defined for 3-dimensional vector fields with 3 variables.")
+            
+            P, Q, R = expr_list
+            x, y, z = vars_list
+            
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: [
+                    sympy.diff(R, y) - sympy.diff(Q, z),
+                    sympy.diff(P, z) - sympy.diff(R, x),
+                    sympy.diff(Q, x) - sympy.diff(P, y)
+                ]
+            )
+            
+            res_str = "[" + ", ".join(str(r) for r in result) + "]"
+            
+            embed = math_embed(
+                title="Curl ∇×F",
+                result=res_str,
+                steps=[
+                    ("Vector Field F", "[" + ", ".join(str(c) for c in expr_list) + "]"),
+                    ("Variables", ", ".join(v.name for v in vars_list)),
+                ]
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
 
 # ---------------------------------------------------------------------------
 # Setup
