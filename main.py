@@ -6,7 +6,7 @@ Start the bot with:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -45,6 +45,7 @@ COGS: list[str] = [
     "cogs.inequalities",
     "cogs.complex",
     "cogs.base_n",
+    "cogs.memory",
     "cogs.utility",
     "cogs.render",
     "cogs.plot_engine",
@@ -74,7 +75,7 @@ async def on_ready() -> None:
     # Record start time once (on_ready can fire again after a reconnect,
     # but uptime should be measured from the first connection).
     if not hasattr(bot, "start_time"):
-        bot.start_time = datetime.utcnow()
+        bot.start_time = datetime.now(tz=timezone.utc)
 
     # Load cogs ---------------------------------------------------------------
     loaded: list[str] = []
@@ -99,14 +100,18 @@ async def on_ready() -> None:
     if failed:
         print(f"  [WARN] Skipped  : {', '.join(failed)}")
 
-    # Sync slash commands globally --------------------------------------------
-    try:
-        synced = await bot.tree.sync()
-        log.info("Synced %d slash command(s) globally.", len(synced))
-        print(f"  Slash cmds  : {len(synced)} synced globally")
-    except discord.HTTPException as exc:
-        log.error("Failed to sync slash commands: %s", exc)
-        print(f"  [WARN] Slash command sync failed: {exc}")
+    # Sync slash commands globally — guarded so reconnects don't re-fire.
+    # Discord rate-limits global syncs heavily; one sync per process lifetime
+    # is the correct pattern.
+    if not getattr(bot, "_commands_synced", False):
+        bot._commands_synced = True
+        try:
+            synced = await bot.tree.sync()
+            log.info("Synced %d slash command(s) globally.", len(synced))
+            print(f"  Slash cmds  : {len(synced)} synced globally")
+        except discord.HTTPException as exc:
+            log.error("Failed to sync slash commands: %s", exc)
+            print(f"  [WARN] Slash command sync failed: {exc}")
 
     print("-" * 48 + "\n")
 

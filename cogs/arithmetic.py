@@ -27,7 +27,8 @@ import discord
 import numpy as np
 
 from utils.parser    import parse_expression
-from utils.formatter import math_embed, error_embed
+from utils.formatter import math_embed, error_embed, to_readable_text
+from data.memory     import memory
 from utils.paginator import send_paginated
 from utils.solver    import solve_quadratic_steps, solve_cubic_steps, solve_quartic_steps, factor_steps
 from data.cache      import get, set, cache_key
@@ -89,6 +90,9 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
         await interaction.response.defer()
 
         try:
+            # Resolve any $name memory references before anything else
+            expression = memory.resolve(interaction.guild_id or 0, interaction.user.id, expression)
+
             # Cache check ------------------------------------------------
             key    = cache_key("simplify", expression)
             cached = get(key)
@@ -150,6 +154,12 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
         await interaction.response.defer()
 
         try:
+            # Resolve $name tokens in the expression only — the variable
+            # parameter is always treated as a free symbol and is never
+            # looked up in memory, so /solve x^2=0 always solves for x
+            # even when x is stored in memory.
+            expression = memory.resolve(interaction.guild_id or 0, interaction.user.id, expression)
+
             expr = await parse_expression(expression)
             var  = sympy.Symbol(variable)
 
@@ -241,6 +251,9 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
         await interaction.response.defer()
 
         try:
+            # Resolve any $name memory references before anything else
+            expression = memory.resolve(interaction.guild_id or 0, interaction.user.id, expression)
+
             # Cache check ------------------------------------------------
             key    = cache_key("expand", expression)
             cached = get(key)
@@ -296,6 +309,9 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
         await interaction.response.defer()
 
         try:
+            # Resolve any $name memory references before anything else
+            expression = memory.resolve(interaction.guild_id or 0, interaction.user.id, expression)
+
             # Cache check ------------------------------------------------
             key    = cache_key("factor", expression)
             cached = get(key)
@@ -632,12 +648,12 @@ class ArithmeticCog(commands.Cog, name="Arithmetic"):
             quotient, remainder = sympy.div(expr_n, expr_d, var)
             
             steps = [
-                ("Dividend", str(expr_n)),
-                ("Divisor", str(expr_d)),
-                ("Verification", f"({str(expr_d)}) * ({str(quotient)}) + ({str(remainder)})")
+                ("Dividend",      to_readable_text(expr_n)),
+                ("Divisor",       to_readable_text(expr_d)),
+                ("Verification",  f"({to_readable_text(expr_d)}) * ({to_readable_text(quotient)}) + ({to_readable_text(remainder)})"),
             ]
-            
-            result_str = f"**Quotient:** {quotient}\n**Remainder:** {remainder}"
+
+            result_str = f"Quotient:   {to_readable_text(quotient)}\nRemainder:  {to_readable_text(remainder)}"
             
             embed = math_embed(
                 title="Polynomial Division",

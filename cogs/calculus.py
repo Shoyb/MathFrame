@@ -32,6 +32,7 @@ import discord
 
 from utils.parser    import parse_expression, _validate_raw  # noqa: PLC2701
 from utils.formatter import math_embed, error_embed, to_readable_text
+from data.memory     import memory
 from utils.solver    import differentiate_steps, integrate_steps
 from utils.renderer  import result_to_image
 
@@ -123,6 +124,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
             if order < 1:
                 raise ValueError("Differentiation order must be at least 1.")
 
+            expression = memory.resolve(interaction.guild_id or 0, interaction.user.id, expression)
             expr = await parse_expression(expression)
             var  = sympy.Symbol(variable)
 
@@ -184,6 +186,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
         await interaction.response.defer()
 
         try:
+            expression = memory.resolve(interaction.guild_id or 0, interaction.user.id, expression)
             expr = await parse_expression(expression)
             var  = sympy.Symbol(variable)
 

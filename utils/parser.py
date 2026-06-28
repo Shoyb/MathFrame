@@ -173,7 +173,10 @@ def _detect_format(expr: str) -> str:
 # Normalisers
 # ---------------------------------------------------------------------------
 
-def _normalize_plain(expr: str) -> sympy.Expr:
+def _normalize_plain(
+    expr: str,
+    local_dict: dict | None = None,
+) -> sympy.Expr:
     """
     Parse a *plain* expression such as ``x^2 + 2x``.
 
@@ -185,14 +188,25 @@ def _normalize_plain(expr: str) -> sympy.Expr:
     Then ``parse_expr`` is called with
     ``implicit_multiplication_application`` so that ``sin(x)cos(x)``
     and similar forms also work.
+
+    Parameters
+    ----------
+    local_dict:
+        Optional symbol overrides passed directly to ``parse_expr``.
+        Used by equation-solving commands to prevent reserved SymPy names
+        (``E``, ``I``, ``N``, …) from being silently rewritten as built-in
+        constants when the user intends them as variable names.
     """
     expr = re.sub(r"\^", "**", expr)
     # Insert explicit * between a digit and a letter: 2x → 2*x, 3xy → 3*xy
     expr = re.sub(r"(\d)([a-zA-Z])", r"\1*\2", expr)
-    return parse_expr(expr, transformations=_TRANSFORMATIONS)
+    return parse_expr(expr, transformations=_TRANSFORMATIONS, local_dict=local_dict or {})
 
 
-def _normalize_natural(expr: str) -> sympy.Expr:
+def _normalize_natural(
+    expr: str,
+    local_dict: dict | None = None,
+) -> sympy.Expr:
     """
     Translate natural-language keywords to SymPy-parseable syntax, then
     delegate to :func:`_normalize_plain`.
@@ -222,13 +236,16 @@ def _normalize_natural(expr: str) -> sympy.Expr:
     ]
     for pattern, replacement in substitutions:
         expr = re.sub(pattern, replacement, expr, flags=re.IGNORECASE)
-    return _normalize_plain(expr)
+    return _normalize_plain(expr, local_dict=local_dict)
 
 # ---------------------------------------------------------------------------
 # Blocking dispatcher (runs inside the thread-pool executor)
 # ---------------------------------------------------------------------------
 
-def _parse_blocking(raw: str) -> sympy.Expr:
+def _parse_blocking(
+    raw: str,
+    local_dict: dict | None = None,
+) -> sympy.Expr:
     """
     Detect the input format and dispatch to the correct normaliser.
 
@@ -240,6 +257,9 @@ def _parse_blocking(raw: str) -> sympy.Expr:
     ----------
     raw:
         Validated, user-supplied expression string.
+    local_dict:
+        Optional symbol overrides forwarded to ``parse_expr``.  See
+        :func:`parse_expression` for details.
 
     Returns
     -------
@@ -270,7 +290,7 @@ def _parse_blocking(raw: str) -> sympy.Expr:
                 latex_exc,
             )
             try:
-                return _normalize_plain(raw)
+                return _normalize_plain(raw, local_dict=local_dict)
             except Exception as fallback_exc:
                 raise ValueError(
                     f"LaTeX parse failed ({latex_exc}). "
@@ -281,19 +301,22 @@ def _parse_blocking(raw: str) -> sympy.Expr:
     if fmt == "python":
         # Route through _normalize_plain so that carets and implicit
         # multiplication are handled even in python-style expressions.
-        return _normalize_plain(raw)
+        return _normalize_plain(raw, local_dict=local_dict)
 
     if fmt == "natural":
-        return _normalize_natural(raw)
+        return _normalize_natural(raw, local_dict=local_dict)
 
     # "plain" — default
-    return _normalize_plain(raw)
+    return _normalize_plain(raw, local_dict=local_dict)
 
 # ---------------------------------------------------------------------------
 # Public async entry-point
 # ---------------------------------------------------------------------------
 
-async def parse_expression(raw: str) -> sympy.Expr:
+async def parse_expression(
+    raw: str,
+    local_dict: dict | None = None,
+) -> sympy.Expr:
     """
     Parse a user-supplied math expression into a :class:`sympy.Expr`.
 
@@ -305,6 +328,15 @@ async def parse_expression(raw: str) -> sympy.Expr:
     ----------
     raw:
         The raw string from a Discord slash-command argument.
+    local_dict:
+        Optional mapping of name → SymPy object forwarded to SymPy's
+        ``parse_expr`` as a *local namespace override*.  Pass this when a
+        cog needs specific identifiers to be treated as plain
+        :class:`~sympy.Symbol` objects rather than SymPy's built-in
+        constants.  For example, ``{"E": sympy.Symbol("E")}`` prevents
+        the letter ``E`` from being silently rewritten as Euler's number.
+
+        Most cogs should leave this as ``None``.
 
     Returns
     -------
@@ -337,7 +369,7 @@ async def parse_expression(raw: str) -> sympy.Expr:
     loop = asyncio.get_event_loop()
     try:
         result = await asyncio.wait_for(
-            loop.run_in_executor(_executor, _parse_blocking, raw),
+            loop.run_in_executor(_executor, _parse_blocking, raw, local_dict),
             timeout=config.COMPUTE_TIMEOUT,
         )
         return result

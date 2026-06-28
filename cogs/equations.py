@@ -36,24 +36,105 @@ _EQ_SPLIT_RE = re.compile(r"(?<![<>!=])=(?!=)")
 _MAX_EQUATIONS = 6
 _MAX_SOLUTIONS = 5
 
+# ---------------------------------------------------------------------------
+# Reserved-name handling (BUG-001 fix)
+# ---------------------------------------------------------------------------
 
-async def _parse_equation(raw: str) -> sympy.Expr:
+# SymPy's default parse_expr namespace contains several single-letter names
+# that collide with common variable choices:
+#
+#   E  → sympy.E  (Euler's number ≈ 2.718) — silently absorbed, wrong result
+#   I  → sympy.I  (imaginary unit)          — silently absorbed, wrong result
+#   N  → N()      (numerical evaluator fn)  — TypeError crash
+#   O  → Order    (Big-O class)             — TypeError crash
+#   S  → S        (singleton registry)      — TypeError crash
+#   Q  → Q        (assumption keys)         — TypeError crash
+#
+# We pre-scan the raw equation strings, identify any of these letters used as
+# variable candidates, and pass them as local_dict overrides to parse_expr so
+# they are treated as plain Symbol objects instead.
+_SYMPY_RESERVED: frozenset[str] = frozenset({"E", "I", "N", "O", "S", "Q"})
+
+# Tokens that are function or constant names — never variable candidates.
+# Keeps e.g. "pi" in "pi*x + y = 1" from being flagged as a missing variable.
+_KNOWN_NON_VARS: frozenset[str] = frozenset({
+    # Trig / inverse trig
+    "sin", "cos", "tan", "cot", "sec", "csc",
+    "asin", "acos", "atan", "acot", "asec", "acsc",
+    "arcsin", "arccos", "arctan",
+    # Hyperbolic
+    "sinh", "cosh", "tanh", "coth",
+    # Exponential / logarithm / roots
+    "exp", "log", "ln", "sqrt", "cbrt", "root",
+    # Misc functions
+    "abs", "sign", "floor", "ceiling", "conjugate", "arg",
+    "Re", "Im", "Abs", "Max", "Min",
+    "factorial", "binomial", "gamma", "beta",
+    # SymPy class names sometimes typed by users
+    "Rational", "Integer", "Float", "Piecewise",
+    # Constants
+    "pi", "oo", "zoo", "nan",
+})
+
+_TOKEN_RE: re.Pattern[str] = re.compile(r"[A-Za-z_]\w*")
+
+
+def _extract_variable_candidates(raw_strs: list[str]) -> set[str]:
+    """
+    Scan *raw_strs* for identifier tokens that are plausible variable names.
+
+    Tokens listed in :data:`_KNOWN_NON_VARS` (function/constant names) are
+    skipped.  Everything else — including tokens that collide with SymPy's
+    reserved names — is included as a candidate.
+    """
+    candidates: set[str] = set()
+    for raw in raw_strs:
+        for token in _TOKEN_RE.findall(raw):
+            if token not in _KNOWN_NON_VARS:
+                candidates.add(token)
+    return candidates
+
+
+def _build_local_dict(candidates: set[str]) -> dict[str, sympy.Symbol]:
+    """
+    Build a ``local_dict`` override for :func:`~utils.parser.parse_expression`.
+
+    For every candidate that collides with a name in :data:`_SYMPY_RESERVED`,
+    the returned dict maps that name to a plain :class:`sympy.Symbol` so
+    ``parse_expr`` treats it as a variable, not a built-in constant or object.
+    """
+    return {
+        name: sympy.Symbol(name)
+        for name in candidates
+        if name in _SYMPY_RESERVED
+    }
+
+
+async def _parse_equation(raw: str, local_dict: dict | None = None) -> sympy.Expr:
     """
     Parse a single equation string into the SymPy expression that equals zero.
 
     Supports:
     * **Explicit equals** ``"x + y = 5"`` — returns ``lhs - rhs``.
     * **Implicit zero**   ``"x + y - 5"`` — returned as-is.
+
+    Parameters
+    ----------
+    local_dict:
+        Symbol overrides forwarded to :func:`~utils.parser.parse_expression`.
+        Used to prevent SymPy reserved names (``E``, ``I``, ``N``, …) from
+        being rewritten as built-in constants when the user intends them as
+        variable names.  Built by :func:`_build_local_dict`.
     """
     raw = raw.strip()
     parts = _EQ_SPLIT_RE.split(raw, maxsplit=1)
     if len(parts) == 2:
         lhs, rhs = await asyncio.gather(
-            parse_expression(parts[0].strip()),
-            parse_expression(parts[1].strip()),
+            parse_expression(parts[0].strip(), local_dict=local_dict),
+            parse_expression(parts[1].strip(), local_dict=local_dict),
         )
         return lhs - rhs
-    return await parse_expression(raw)
+    return await parse_expression(raw, local_dict=local_dict)
 
 
 def _split_equations(raw: str) -> list[str]:
@@ -143,16 +224,34 @@ class EquationsCog(commands.Cog, name="Equations"):
                 )
 
             # ---- Parse ---------------------------------------------------
+            # Pre-scan raw strings to detect any variable names that clash
+            # with SymPy's reserved namespace (E, I, N, O, S, Q).  Build a
+            # local_dict override so parse_expr treats them as Symbols.
+            candidates = _extract_variable_candidates(raw_eqs)
+            local_dict = _build_local_dict(candidates)
+
             parsed: list[sympy.Expr] = list(
-                await asyncio.gather(*(_parse_equation(eq) for eq in raw_eqs))
+                await asyncio.gather(
+                    *(_parse_equation(eq, local_dict=local_dict) for eq in raw_eqs)
+                )
             )
 
             # ---- Determine variables -------------------------------------
             if variables.strip():
+                raw_var_names = [v.strip() for v in variables.split(",") if v.strip()]
+                # Validate: each token must be a legal Python identifier so that
+                # space-separated input like "x y" is caught immediately instead
+                # of creating a Symbol named "x y" that matches nothing.
+                invalid_names = [v for v in raw_var_names if not v.isidentifier()]
+                if invalid_names:
+                    raise ValueError(
+                        f"Invalid variable name(s): "
+                        f"{', '.join(f'`{v}`' for v in invalid_names)}.\n"
+                        "Variable names must be comma-separated identifiers, "
+                        "e.g. `x, y` or `a, b, c`."
+                    )
                 var_syms: list[sympy.Symbol] = [
-                    sympy.Symbol(v.strip())
-                    for v in variables.split(",")
-                    if v.strip()
+                    sympy.Symbol(v) for v in raw_var_names
                 ]
             else:
                 free: set[sympy.Symbol] = set()
