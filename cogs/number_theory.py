@@ -240,11 +240,14 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    nt = app_commands.Group(name="nt", description="Number theory commands.")
+
+
     # -----------------------------------------------------------------------
     # /gcd
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="gcd",
         description="Compute the Greatest Common Divisor of a list of integers.",
     )
@@ -272,7 +275,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /lcm
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="lcm",
         description="Compute the Least Common Multiple of a list of integers.",
     )
@@ -301,7 +304,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /is_prime
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="is_prime",
         description=f"Test whether an integer is prime (n ≤ 10¹²).",
     )
@@ -345,7 +348,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /factorize
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="factorize",
         description=f"Prime-factorise an integer (n ≤ 10¹⁵).",
     )
@@ -381,8 +384,8 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /primes_up_to
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="primes_up_to",
+    @nt.command(
+        name="primes",
         description=f"List all primes up to n (n ≤ {_PRIMES_UPTO_CAP:,}).",
     )
     @app_commands.describe(n=f"Upper bound (inclusive, max {_PRIMES_UPTO_CAP:,})")
@@ -417,7 +420,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /modular
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="modular",
         description="Compute base^exp mod m using fast modular exponentiation.",
     )
@@ -460,7 +463,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /fibonacci
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="fibonacci",
         description=f"Generate the first n Fibonacci numbers (n ≤ {_FIB_CAP}).",
     )
@@ -499,7 +502,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /totient  (T1-6)
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="totient",
         description="Compute Euler's totient φ(n) — the count of integers up to n coprime to n.",
     )
@@ -530,7 +533,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /divisors  (T1-6)
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="divisors",
         description="List all positive divisors of n.",
     )
@@ -569,7 +572,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /is_perfect  (T1-6)
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="is_perfect",
         description="Check whether n is a perfect number (equals the sum of its proper divisors).",
     )
@@ -612,7 +615,7 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /mobius  (T1-6)
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @nt.command(
         name="mobius",
         description="Compute the Möbius function μ(n): returns −1, 0, or 1.",
     )
@@ -652,8 +655,8 @@ class NumberTheoryCog(commands.Cog, name="Number Theory"):
     # /chinese_remainder  (T1-6)
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="chinese_remainder",
+    @nt.command(
+        name="crt",
         description="Solve a system of congruences using the Chinese Remainder Theorem.",
     )
     @app_commands.describe(

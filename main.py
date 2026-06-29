@@ -31,25 +31,22 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 COGS: list[str] = [
-    "cogs.admin",
-    "cogs.arithmetic",
-    "cogs.calculus",
-    "cogs.transforms",
-    "cogs.linear_algebra",
-    "cogs.statistics",
-    "cogs.number_theory",
-    "cogs.geometry",
-    "cogs.discrete",
-    "cogs.symbolic",
-    "cogs.equations",
-    "cogs.inequalities",
-    "cogs.complex",
-    "cogs.base_n",
-    "cogs.memory",
-    "cogs.utility",
-    "cogs.render",
-    "cogs.plot_engine",
-    "cogs.wiki"
+    "cogs.admin",        # /admin  — already a group (no changes needed)
+    "cogs.algebra",      # /alg    — merged: arithmetic + equations + inequalities
+    "cogs.calculus",     # /calc
+    "cogs.transforms",   # /tf
+    "cogs.linear_algebra",  # /mat
+    "cogs.statistics",   # /stat
+    "cogs.number_theory",   # /nt
+    "cogs.geometry",     # /geo
+    "cogs.discrete",     # /dis
+    "cogs.symbolic",     # /sym
+    "cogs.complex",      # /cx
+    "cogs.base_n",       # /base
+    "cogs.memory",       # /mem   — already a group (no changes needed)
+    "cogs.bot",          # /bot   — merged: utility + wiki
+    "cogs.render",       # /render
+    "cogs.plot_engine",  # /plot
 ]
 
 # ---------------------------------------------------------------------------

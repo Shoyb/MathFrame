@@ -1616,8 +1616,11 @@ class PlotEngine(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(
-        name="plot_import",
+    plot_grp = app_commands.Group(name="plot", description="Plotting commands.")
+
+
+    @plot_grp.command(
+        name="load",
         description="Import a shared PlotEngine configuration.",
     )
     async def plot_import(self, interaction: discord.Interaction, config_string: str) -> None:
@@ -1637,8 +1640,8 @@ class PlotEngine(commands.Cog):
         )
         view._message = await interaction.original_response()
 
-    @app_commands.command(
-        name="plot",
+    @plot_grp.command(
+        name="start",
         description="Open the interactive plot builder to create a customised plot.",
     )
     @app_commands.describe(
@@ -1669,8 +1672,8 @@ class PlotEngine(commands.Cog):
         )
         view._message = await interaction.original_response()
 
-    @app_commands.command(
-        name="quickplot",
+    @plot_grp.command(
+        name="quick",
         description="Plot a function expression instantly with no builder UI.",
     )
     @app_commands.describe(
@@ -1717,8 +1720,8 @@ class PlotEngine(commands.Cog):
         embed.set_footer(text=f"x ∈ [{x_min}, {x_max}] | color={color}")
         await interaction.followup.send(embed=embed, file=file)
 
-    @app_commands.command(
-        name="multiplot",
+    @plot_grp.command(
+        name="multi",
         description="Plot up to 4 functions side-by-side in one image.",
     )
     @app_commands.describe(

@@ -96,11 +96,14 @@ class CalculusCog(commands.Cog, name="Calculus"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    calc = app_commands.Group(name="calc", description="Calculus operations.")
+
+
     # -----------------------------------------------------------------------
     # /diff
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="diff",
         description="Differentiate an expression with respect to a variable.",
     )
@@ -163,7 +166,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /integrate
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="integrate",
         description="Compute the definite or indefinite integral of an expression.",
     )
@@ -241,7 +244,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /limit
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="limit",
         description="Evaluate the limit of an expression as a variable approaches a point.",
     )
@@ -308,7 +311,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /series
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="series",
         description="Expand an expression as a Taylor / Maclaurin series.",
     )
@@ -377,8 +380,8 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /sum_series
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="sum_series",
+    @calc.command(
+        name="sum",
         description="Evaluate a summation (Σ) over a range.",
     )
     @app_commands.describe(
@@ -452,8 +455,8 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /product_series
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="product_series",
+    @calc.command(
+        name="product",
         description="Evaluate a product (Π) over a range.",
     )
     @app_commands.describe(
@@ -527,7 +530,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /ode
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="ode",
         description="Solve a differential equation.",
     )
@@ -672,7 +675,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /gradient
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="gradient",
         description="Compute the gradient of a scalar field ∇f.",
     )
@@ -718,7 +721,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /divergence
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="divergence",
         description="Compute the divergence of a vector field ∇·F.",
     )
@@ -768,7 +771,7 @@ class CalculusCog(commands.Cog, name="Calculus"):
     # /curl
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @calc.command(
         name="curl",
         description="Compute the curl of a 3D vector field ∇×F.",
     )

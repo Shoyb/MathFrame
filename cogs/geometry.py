@@ -91,12 +91,15 @@ class GeometryCog(commands.Cog, name="Geometry"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    geo = app_commands.Group(name="geo", description="Geometry commands.")
+
+
     # -----------------------------------------------------------------------
     # /circle_area
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="circle_area",
+    @geo.command(
+        name="circle",
         description="Compute the area of a circle from its radius.",
     )
     @app_commands.describe(radius="Radius of the circle (must be positive)")
@@ -140,8 +143,8 @@ class GeometryCog(commands.Cog, name="Geometry"):
     # /circle_circumference
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="circle_circumference",
+    @geo.command(
+        name="circumference",
         description="Compute the circumference of a circle from its radius.",
     )
     @app_commands.describe(radius="Radius of the circle (must be positive)")
@@ -185,8 +188,8 @@ class GeometryCog(commands.Cog, name="Geometry"):
     # /triangle_area
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="triangle_area",
+    @geo.command(
+        name="triangle",
         description="Compute the area of a triangle.",
     )
     @app_commands.describe(
@@ -306,7 +309,7 @@ class GeometryCog(commands.Cog, name="Geometry"):
     # /pythagorean
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @geo.command(
         name="pythagorean",
         description="Solve for the missing side of a right triangle (a² + b² = c²).",
     )
@@ -399,7 +402,7 @@ class GeometryCog(commands.Cog, name="Geometry"):
     # /trig
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @geo.command(
         name="trig",
         description="Evaluate a trigonometric function with exact and decimal results.",
     )
@@ -534,7 +537,7 @@ class GeometryCog(commands.Cog, name="Geometry"):
     # /distance
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @geo.command(
         name="distance",
         description="Compute the Euclidean distance between two points (2D or 3D).",
     )

@@ -73,12 +73,15 @@ class BaseNCog(commands.Cog, name="Base-N"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    base = app_commands.Group(name="base", description="Base conversion commands.")
+
+
     # -----------------------------------------------------------------------
     # /base_convert
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="base_convert",
+    @base.command(
+        name="convert",
         description="Convert a number from one base to another (bases 2-36).",
     )
     @app_commands.describe(
@@ -117,8 +120,8 @@ class BaseNCog(commands.Cog, name="Base-N"):
     # /base_add
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="base_add",
+    @base.command(
+        name="add",
         description="Add two numbers in a specific base.",
     )
     @app_commands.describe(
@@ -164,8 +167,8 @@ class BaseNCog(commands.Cog, name="Base-N"):
     # /base_logic
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="base_logic",
+    @base.command(
+        name="logic",
         description="Perform bitwise logic operations (AND, OR, XOR, NOT).",
     )
     @app_commands.describe(
@@ -240,8 +243,8 @@ class BaseNCog(commands.Cog, name="Base-N"):
     # /bases
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="bases",
+    @base.command(
+        name="table",
         description="Show a value in Decimal, Binary, Octal, and Hexadecimal simultaneously.",
     )
     @app_commands.describe(value="The value to display (must be an integer)")

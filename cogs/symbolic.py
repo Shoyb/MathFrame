@@ -230,11 +230,14 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    sym = app_commands.Group(name="sym", description="Symbolic math commands.")
+
+
     # -----------------------------------------------------------------------
     # /latex
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @sym.command(
         name="latex",
         description="Render a mathematical expression as a LaTeX image.",
     )
@@ -292,7 +295,7 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
     # /subs
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @sym.command(
         name="subs",
         description='Substitute values into an expression, e.g. substitutions: "x=2, y=pi".',
     )
@@ -358,8 +361,8 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
     # /partial_fraction
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="partial_fraction",
+    @sym.command(
+        name="partial",
         description="Decompose a rational expression into partial fractions.",
     )
     @app_commands.describe(
@@ -422,7 +425,7 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
     # /identify  (T1-7)
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @sym.command(
         name="identify",
         description="Classify an expression: polynomial, trig, exponential, even/odd, periodic, and more.",
     )
@@ -502,7 +505,7 @@ class SymbolicCog(commands.Cog, name="Symbolic"):
     # /roots
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @sym.command(
         name="roots",
         description="Find all roots of an expression (set equal to zero).",
     )

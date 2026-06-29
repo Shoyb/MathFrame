@@ -110,6 +110,9 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    mat = app_commands.Group(name="mat", description="Linear algebra and matrix commands.")
+
+
     # -----------------------------------------------------------------------
     # Shared matrix parser (instance method so subclasses can override)
     # -----------------------------------------------------------------------
@@ -169,8 +172,8 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
     # /matrix_det
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="matrix_det",
+    @mat.command(
+        name="det",
         description="Compute the determinant of a square matrix.",
     )
     @app_commands.describe(matrix='Square matrix as a JSON 2-D array, e.g. [[1,2],[3,4]]')
@@ -202,8 +205,8 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
     # /matrix_inv
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="matrix_inv",
+    @mat.command(
+        name="inv",
         description="Compute the inverse of a square, non-singular matrix.",
     )
     @app_commands.describe(matrix='Square matrix as a JSON 2-D array, e.g. [[1,2],[3,4]]')
@@ -242,8 +245,8 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
     # /eigenvalues
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="eigenvalues",
+    @mat.command(
+        name="eigen",
         description="Find the eigenvalues (with multiplicity) of a square matrix.",
     )
     @app_commands.describe(matrix='Square matrix as a JSON 2-D array, e.g. [[1,2],[3,4]]')
@@ -285,7 +288,7 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
     # /dot
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @mat.command(
         name="dot",
         description="Compute the dot product of two vectors.",
     )
@@ -326,7 +329,7 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
     # /cross
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @mat.command(
         name="cross",
         description="Compute the cross product of two 3-D vectors.",
     )
@@ -374,7 +377,7 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
     # /rref
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @mat.command(
         name="rref",
         description="Compute the reduced row-echelon form (RREF) of a matrix.",
     )

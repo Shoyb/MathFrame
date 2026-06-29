@@ -67,12 +67,15 @@ class ComplexCog(commands.Cog, name="Complex"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    cx = app_commands.Group(name="cx", description="Complex number commands.")
+
+
     # -----------------------------------------------------------------------
     # /complex_calc
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="complex_calc",
+    @cx.command(
+        name="calc",
         description="Evaluate a complex arithmetic expression (e.g. (2+3i)*(1-i)).",
     )
     @app_commands.describe(expression="The expression to evaluate.")
@@ -100,8 +103,8 @@ class ComplexCog(commands.Cog, name="Complex"):
     # /complex_polar
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="complex_polar",
+    @cx.command(
+        name="polar",
         description="Convert a complex number to polar form (modulus, argument).",
     )
     @app_commands.describe(expression="The complex number, e.g. 1+i")
@@ -137,8 +140,8 @@ class ComplexCog(commands.Cog, name="Complex"):
     # /complex_rect
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="complex_rect",
+    @cx.command(
+        name="rect",
         description="Convert polar coordinates (r, θ) to rectangular form (a + bi).",
     )
     @app_commands.describe(
@@ -176,8 +179,8 @@ class ComplexCog(commands.Cog, name="Complex"):
     # /complex_conjugate
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="complex_conjugate",
+    @cx.command(
+        name="conj",
         description="Return the complex conjugate of an expression.",
     )
     @app_commands.describe(expression="The complex expression")
@@ -206,8 +209,8 @@ class ComplexCog(commands.Cog, name="Complex"):
     # /complex_modulus
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="complex_modulus",
+    @cx.command(
+        name="modulus",
         description="Calculate the modulus (absolute value) |z| of a complex expression.",
     )
     @app_commands.describe(expression="The complex expression")

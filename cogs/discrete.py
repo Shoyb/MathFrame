@@ -436,11 +436,14 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    dis = app_commands.Group(name="dis", description="Discrete math commands.")
+
+
     # -----------------------------------------------------------------------
     # /permutation
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @dis.command(
         name="permutation",
         description="Compute nPr — the number of ways to arrange r items chosen from n.",
     )
@@ -490,7 +493,7 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
     # /combination
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @dis.command(
         name="combination",
         description="Compute nCr — the number of ways to choose r items from n (order doesn't matter).",
     )
@@ -543,7 +546,7 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
     # /truth_table
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @dis.command(
         name="truth_table",
         description="Generate a truth table for a boolean expression.",
     )
@@ -618,7 +621,7 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
     # /set_ops
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @dis.command(
         name="set_ops",
         description="Perform a set operation on two comma-separated sets.",
     )
@@ -682,8 +685,8 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
     # /binomial_coeff
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="binomial_coeff",
+    @dis.command(
+        name="binomial",
         description="Show the nth row of Pascal's triangle.",
     )
     @app_commands.describe(n="Row number, 0-indexed (capped at 20)")
@@ -719,8 +722,8 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
     # /simplify_bool
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="simplify_bool",
+    @dis.command(
+        name="bool",
         description="Simplify a boolean expression, or convert it to DNF / CNF.",
     )
     @app_commands.describe(
@@ -788,7 +791,7 @@ class DiscreteCog(commands.Cog, name="Discrete Math"):
     # /logic_equiv
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @dis.command(
         name="logic_equiv",
         description="Check whether two boolean expressions are logically equivalent.",
     )

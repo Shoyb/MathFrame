@@ -368,11 +368,14 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    stat = app_commands.Group(name="stat", description="Statistics and probability commands.")
+
+
     # -----------------------------------------------------------------------
     # /mean
     # -----------------------------------------------------------------------
 
-    @app_commands.command(name="mean", description="Compute the arithmetic mean of a data set.")
+    @stat.command(name="mean", description="Compute the arithmetic mean of a data set.")
     @app_commands.describe(data='Comma-separated numbers, e.g. "1, 2, 3, 4, 5"')
     @app_commands.checks.cooldown(1, 2.0)
     async def mean(self, interaction: discord.Interaction, data: str) -> None:
@@ -393,7 +396,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /median
     # -----------------------------------------------------------------------
 
-    @app_commands.command(name="median", description="Compute the median of a data set.")
+    @stat.command(name="median", description="Compute the median of a data set.")
     @app_commands.describe(data='Comma-separated numbers, e.g. "1, 2, 3, 4, 5"')
     @app_commands.checks.cooldown(1, 2.0)
     async def median(self, interaction: discord.Interaction, data: str) -> None:
@@ -414,7 +417,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /mode
     # -----------------------------------------------------------------------
 
-    @app_commands.command(name="mode", description="Find the mode (most common value) of a data set.")
+    @stat.command(name="mode", description="Find the mode (most common value) of a data set.")
     @app_commands.describe(data='Comma-separated numbers, e.g. "1, 2, 2, 3"')
     @app_commands.checks.cooldown(1, 2.0)
     async def mode(self, interaction: discord.Interaction, data: str) -> None:
@@ -438,7 +441,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /stdev
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="stdev",
         description="Compute the sample standard deviation of a data set.",
     )
@@ -469,7 +472,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /variance
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="variance",
         description="Compute the sample variance of a data set.",
     )
@@ -498,7 +501,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /zscore
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="zscore",
         description="Compute the z-score (standard score) for a value.",
     )
@@ -543,7 +546,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /correlation
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="correlation",
         description="Compute the Pearson correlation coefficient between two data series.",
     )
@@ -592,7 +595,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /regression
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="regression",
         description="Fit a linear regression to two data series and plot the result.",
     )
@@ -658,7 +661,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /distribution  (T1-1 — unified distribution command)
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="distribution",
         description="Compute or plot a probability distribution. Use `kind` to choose; `params` for values.",
     )
@@ -799,7 +802,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /normal_pdf  [DEPRECATED — use /distribution kind=normal_pdf]
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="normal_pdf",
         description="[DEPRECATED — use /distribution] Plot the Normal distribution PDF.",
     )
@@ -857,7 +860,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /normal_cdf
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="normal_cdf",
         description="Compute the cumulative probability P(lower ≤ X ≤ upper) for a normal distribution.",
     )
@@ -902,7 +905,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /inv_normal
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="inv_normal",
         description="Inverse normal: find x given P(X ≤ x) = probability.",
     )
@@ -947,7 +950,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /binomial_cdf
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="binomial_cdf",
         description="Compute P(X ≤ x) for a Binomial distribution.",
     )
@@ -995,7 +998,7 @@ class StatisticsCog(commands.Cog, name="Statistics"):
     # /poisson_cdf
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @stat.command(
         name="poisson_cdf",
         description="Compute P(X ≤ x) for a Poisson distribution.",
     )

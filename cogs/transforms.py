@@ -30,11 +30,14 @@ class TransformsCog(commands.Cog, name="Transforms"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    tf = app_commands.Group(name="tf", description="Mathematical transform commands.")
+
+
     # -----------------------------------------------------------------------
     # /laplace
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @tf.command(
         name="laplace",
         description="Compute the unilateral Laplace transform L{f(t)}(s).",
     )
@@ -82,7 +85,7 @@ class TransformsCog(commands.Cog, name="Transforms"):
     # /inv_laplace
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @tf.command(
         name="inv_laplace",
         description="Compute the inverse Laplace transform L⁻¹{F(s)}(t).",
     )
@@ -129,7 +132,7 @@ class TransformsCog(commands.Cog, name="Transforms"):
     # /fourier
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @tf.command(
         name="fourier",
         description="Compute the continuous Fourier transform F{f(x)}(k).",
     )
@@ -176,7 +179,7 @@ class TransformsCog(commands.Cog, name="Transforms"):
     # /inv_fourier
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @tf.command(
         name="inv_fourier",
         description="Compute the inverse continuous Fourier transform F⁻¹{F(k)}(x).",
     )

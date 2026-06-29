@@ -29,12 +29,15 @@ class RenderCog(commands.Cog, name="Render"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    render_grp = app_commands.Group(name="render", description="Expression rendering commands.")
+
+
     # -----------------------------------------------------------------------
     # /render  — raw LaTeX → PNG
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
-        name="render",
+    @render_grp.command(
+        name="expr",
         description="Render a LaTeX expression as a PNG image.",
     )
     @app_commands.describe(
@@ -92,7 +95,7 @@ class RenderCog(commands.Cog, name="Render"):
     # /formula  — parsed expression → PNG
     # -----------------------------------------------------------------------
 
-    @app_commands.command(
+    @render_grp.command(
         name="formula",
         description="Parse and render any math expression as a PNG formula image.",
     )
