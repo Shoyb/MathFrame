@@ -47,6 +47,7 @@ COGS: list[str] = [
     "cogs.bot",          # /bot   — merged: utility + wiki
     "cogs.render",       # /render
     "cogs.plot_engine",  # /plot
+    "cogs.csv_tools",   # /csv   — CSV upload + stats + interactive plots
 ]
 
 # ---------------------------------------------------------------------------
