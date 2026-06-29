@@ -709,14 +709,14 @@ class BotCog(commands.Cog, name="Bot"):
         self.bot = bot
         self._session: aiohttp.ClientSession | None = None
 
-    bot_grp = app_commands.Group(name="bot", description="Bot utility and reference commands.")
+    utility_grp = app_commands.Group(name="bot", description="Bot utility and reference commands.")
 
 
     # -----------------------------------------------------------------------
     # /history
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="history",
         description="Show your recent calculation history.",
     )
@@ -752,7 +752,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /clear_history
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="clear",
         description="Clear your calculation history.",
     )
@@ -773,7 +773,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /constants
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="constants",
         description="Show a reference list of common mathematical constants.",
     )
@@ -799,7 +799,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /help_math
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="help",
         description="Show all bot commands, grouped by category.",
     )
@@ -809,14 +809,23 @@ class BotCog(commands.Cog, name="Bot"):
         await interaction.response.defer()
 
         pages: list[discord.Embed] = []
-        for cog_name, cog in self.bot.cogs.items():
+        for cog_name, cog in sorted(self.bot.cogs.items()):
             app_cmds = cog.get_app_commands()
             if not app_cmds:
                 continue
-            lines = [
-                f"**/{cmd.name}** — {cmd.description}"
-                for cmd in sorted(app_cmds, key=lambda c: c.name)
-            ]
+
+            lines: list[str] = []
+            for cmd in sorted(app_cmds, key=lambda c: c.name):
+                if isinstance(cmd, app_commands.Group):
+                    # Expand subcommands: show  /group sub  — description
+                    for subcmd in sorted(cmd.commands, key=lambda c: c.name):
+                        lines.append(f"**/{cmd.name} {subcmd.name}** — {subcmd.description}")
+                else:
+                    lines.append(f"**/{cmd.name}** — {cmd.description}")
+
+            if not lines:
+                continue
+
             embed = discord.Embed(
                 title=f"📘 {cog_name}",
                 description="\n".join(lines),
@@ -834,7 +843,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /convert
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="convert",
         description="Convert a value between units (length, mass, temp, time, area, volume, speed, force, energy, power).",
     )
@@ -919,7 +928,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /units
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="units",
         description="Convert any expression with units, including compound and derived units.",
     )
@@ -1043,7 +1052,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /about
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="about",
         description="Show information about this bot.",
     )
@@ -1115,7 +1124,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /wiki
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="wiki",
         description="Fetch a Wikipedia article and browse it paragraph by paragraph.",
     )
@@ -1157,7 +1166,7 @@ class BotCog(commands.Cog, name="Bot"):
     # /wiki_search
     # -----------------------------------------------------------------------
 
-    @bot_grp.command(
+    @utility_grp.command(
         name="wiki_search",
         description="Search Wikipedia and see a list of matching articles.",
     )
