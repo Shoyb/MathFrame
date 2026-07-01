@@ -37,7 +37,7 @@ import numpy as np
 # Constants / limits
 # ---------------------------------------------------------------------------
 
-_MAX_FILE_BYTES   = 2 * 1024 * 1024   # 2 MB
+_MAX_FILE_BYTES   = 25 * 1024 * 1024  # 25 MB (Discord free-tier upload cap)
 _MAX_ROWS         = 10_000
 _MAX_COLUMNS      = 50
 _SESSION_TTL_MINUTES = 30

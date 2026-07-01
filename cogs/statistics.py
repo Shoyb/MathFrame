@@ -8,6 +8,7 @@ Commands
 /mode          data                        Most common value(s).
 /stdev         data                        Sample standard deviation.
 /variance      data                        Sample variance.
+/summary       data                        All descriptive statistics at once (sum, mean, variance, stdev, IQR, skew, etc).
 /zscore        value  mean  stdev          Standard score (z-score).
 /correlation   data_x  data_y             Pearson correlation coefficient.
 /regression    data_x  data_y             Linear regression with scatter plot.
@@ -35,6 +36,7 @@ from discord.ext import commands
 from scipy import stats as scipy_stats
 
 from utils.formatter import error_embed, math_embed
+from utils.stats_summary import compute_summary
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -492,6 +494,57 @@ class StatisticsCog(commands.Cog, name="Statistics"):
                     f"n = {len(nums)}  |  sample variance (÷ n−1)  |  "
                     "population variance divides by n"
                 ),
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /summary
+    # -----------------------------------------------------------------------
+
+    @stat.command(
+        name="summary",
+        description="All descriptive statistics for a data set at once (sum, mean, variance, stdev, IQR, skew, etc).",
+    )
+    @app_commands.describe(data='Comma-separated numbers, e.g. "2, 4, 4, 4, 5, 5, 7, 9"')
+    @app_commands.checks.cooldown(1, 2.0)
+    async def summary(self, interaction: discord.Interaction, data: str) -> None:
+        await interaction.response.defer()
+        try:
+            nums = parse_numbers(data)
+            s = compute_summary(nums)
+
+            modes_str = ", ".join(f"{m:g}" for m in s.modes)
+            skew_str = f"{s.skewness:.6g}" if s.skewness is not None else "undefined (zero variance)"
+            kurt_str = f"{s.kurtosis:.6g}" if s.kurtosis is not None else "undefined (zero variance)"
+
+            result = (
+                f"n                     = {s.n}\n"
+                f"Sum                   = {s.total:.6g}\n"
+                f"Sum of squares (Σx²)  = {s.sum_sq:.6g}\n"
+                f"Mean                  = {s.mean:.6g}\n"
+                f"Median                = {s.median:.6g}\n"
+                f"Mode                  = {modes_str}\n"
+                "\n"
+                f"Sample variance       = {s.sample_variance:.6g}\n"
+                f"Population variance   = {s.population_variance:.6g}\n"
+                f"Sample stdev          = {s.sample_stdev:.6g}\n"
+                f"Population stdev      = {s.population_stdev:.6g}\n"
+                "\n"
+                f"Min / Max             = {s.minimum:.6g} / {s.maximum:.6g}\n"
+                f"Range                 = {s.data_range:.6g}\n"
+                f"Q1 / Q3               = {s.q1:.6g} / {s.q3:.6g}\n"
+                f"IQR                   = {s.iqr:.6g}\n"
+                "\n"
+                f"Skewness              = {skew_str}\n"
+                f"Kurtosis (excess)     = {kurt_str}"
+            )
+
+            embed = math_embed(
+                title="Statistics Summary",
+                result=result,
+                footer=f"n = {s.n}  |  sample stats use n−1 (Bessel's correction)  |  population stats use n",
             )
             await interaction.followup.send(embed=embed)
         except ValueError as exc:

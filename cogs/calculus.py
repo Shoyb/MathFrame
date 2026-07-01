@@ -10,6 +10,7 @@ Commands
 /sum_series     expression variable [lower] [upper]         Evaluate a summation (Σ).
 /product_series expression variable [lower] [upper]         Evaluate a product (Π).
 /ode            expression [initial_conditions]             Solve a differential equation.
+/ode_numeric    expression initial_conditions x_start x_end  Numerically integrate an ODE.
 /gradient       expression [variables]                      Compute the gradient ∇f.
 /divergence     expression [variables]                      Compute the divergence ∇·F.
 /curl           expression [variables]                      Compute the curl ∇×F.
@@ -23,18 +24,31 @@ Note: plotting is handled entirely by cogs/plot_engine.py (/plot, /quickplot,
 """
 
 import asyncio
-import re
+import io
 
+import numpy as np
 import sympy
 from discord import app_commands
 from discord.ext import commands
 import discord
+from scipy.integrate import solve_ivp
+
+import matplotlib
+matplotlib.use("Agg")  # headless — must be before pyplot import
+import matplotlib.pyplot as plt  # noqa: E402
 
 from utils.parser    import parse_expression, _validate_raw  # noqa: PLC2701
 from utils.formatter import math_embed, error_embed, to_readable_text
 from data.memory     import memory
 from utils.solver    import differentiate_steps, integrate_steps
 from utils.renderer  import result_to_image
+from utils.ode_utils import (
+    parse_ode,
+    parse_symbolic_ics,
+    ode_order,
+    extract_numeric_ics,
+    build_numeric_rhs,
+)
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -84,6 +98,55 @@ def _parse_point(point_str: str) -> sympy.Basic:
         return sympy.sympify(stripped)
     except sympy.SympifyError as exc:
         raise ValueError(f"Cannot parse point `{point_str}`: {exc}") from exc
+
+
+def _ode_numeric_plot_bytes(
+    t: np.ndarray,
+    y: np.ndarray,
+    func_name: str,
+    order: int,
+) -> io.BytesIO:
+    """
+    Render a numeric ODE trajectory to a PNG and return it as a BytesIO.
+
+    Plots the solution itself; for order ≥ 2 also overlays each derivative
+    up to (order - 1) on the same axes so e.g. a 2nd-order solve shows both
+    y(x) and y'(x).
+
+    Parameters
+    ----------
+    t:
+        1-D array of independent-variable sample points (``solve_ivp``'s
+        ``.t``).
+    y:
+        2-D array of shape ``(order, len(t))`` — ``solve_ivp``'s ``.y``,
+        one row per state component ``[y, y', y'', ...]``.
+    func_name:
+        Name of the dependent function, e.g. ``"y"``, for axis labels.
+    order:
+        Number of state components in *y* (the ODE's order).
+    """
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    primes = ""
+    for k in range(order):
+        label = f"{func_name}{primes}(x)" if k > 0 else f"{func_name}(x)"
+        ax.plot(t, y[k], linewidth=2, label=label)
+        primes += "\u2032"
+
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.axvline(0, color="gray", linewidth=0.5)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlabel("x", fontsize=10)
+    ax.set_ylabel(func_name, fontsize=10)
+    ax.set_title(f"Numeric solution of the ODE for {func_name}(x)", fontsize=12, pad=6)
+    if order > 1:
+        ax.legend()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 
 # ---------------------------------------------------------------------------
@@ -547,117 +610,27 @@ class CalculusCog(commands.Cog, name="Calculus"):
     ) -> None:
         await interaction.response.defer()
         try:
-            # 1. Preprocess expression for primes
-            # Convert f''(x) -> Derivative(f(x), x, x)
-            def repl_f(m):
-                func = m.group(1)
-                primes = len(m.group(2))
-                var = m.group(3)
-                args = ", ".join([var] * primes)
-                return f"Derivative({func}({var}), {args})"
-            
-            expr_str = re.sub(r"\b([a-zA-Z_]\w*)('+)\s*\(\s*([a-zA-Z_]\w*)\s*\)", repl_f, expression)
-            
-            # Convert y'' -> Derivative(y(x), x, x) (assumes independent variable is x)
-            def repl_y(m):
-                func = m.group(1)
-                primes = len(m.group(2))
-                args = ", ".join(["x"] * primes)
-                return f"Derivative({func}(x), {args})"
-            
-            expr_str = re.sub(r"\b([a-zA-Z_]\w*)('+)(?!\()", repl_y, expr_str)
-            
-            # 2. Parse the equation
-            if "=" in expr_str:
-                lhs_str, rhs_str = expr_str.split("=", 1)
-                lhs = await parse_expression(lhs_str)
-                rhs = await parse_expression(rhs_str)
-                eq = sympy.Eq(lhs, rhs)
-            else:
-                eq = sympy.Eq(await parse_expression(expr_str), 0)
-                
-            # 3. Upgrade standalone symbols to functions of their independent variable
-            funcs_in_deriv = set()
-            for atom in eq.atoms(sympy.Derivative):
-                if isinstance(atom.expr, sympy.Function):
-                    funcs_in_deriv.add((str(atom.expr.func), atom.variables))
-            
-            for atom in eq.atoms(sympy.Function):
-                funcs_in_deriv.add((str(atom.func), atom.args))
-                
-            subs_dict = {}
-            for name, vars_tuple in funcs_in_deriv:
-                if len(vars_tuple) > 0:
-                    var = vars_tuple[0]
-                    sym = sympy.Symbol(name)
-                    func = sympy.Function(name)(var)
-                    subs_dict[sym] = func
-                    
-            if subs_dict:
-                eq = eq.subs(subs_dict)
-                
-            # Fallback if no functions were found but we have y and x
-            if not funcs_in_deriv and sympy.Symbol('y') in eq.free_symbols and sympy.Symbol('x') in eq.free_symbols:
-                eq = eq.subs(sympy.Symbol('y'), sympy.Function('y')(sympy.Symbol('x')))
-                
-            # Find the function we are solving for
-            func_to_solve = None
-            for atom in eq.atoms(sympy.Function):
-                func_to_solve = atom
-                break
-                
-            if func_to_solve is None:
-                raise ValueError("Could not detect a dependent function in the ODE.")
-                
-            # 4. Parse initial conditions
-            ics = {}
-            if initial_conditions:
-                for token in initial_conditions.split(","):
-                    token = token.strip()
-                    if not token: continue
-                    if "=" not in token:
-                        raise ValueError(f"Invalid initial condition: {token}")
-                    lhs_str, rhs_str = token.split("=", 1)
-                    lhs_str = lhs_str.strip()
-                    rhs_val = await parse_expression(rhs_str)
-                    
-                    m = re.match(r"^([a-zA-Z_]\w*)('*)\s*\(\s*(.+)\s*\)$", lhs_str)
-                    if not m:
-                        raise ValueError(f"Could not parse initial condition LHS: {lhs_str}")
-                    func_name = m.group(1)
-                    primes = len(m.group(2))
-                    val_str = m.group(3)
-                    val = await parse_expression(val_str)
-                    
-                    indep_var = func_to_solve.args[0] if len(func_to_solve.args) > 0 else sympy.Symbol('x')
-                    func_sym = sympy.Function(func_name)
-                    
-                    if primes == 0:
-                        lhs_ic = func_sym(val)
-                    else:
-                        deriv = sympy.Derivative(func_sym(indep_var), *(indep_var for _ in range(primes)))
-                        lhs_ic = deriv.subs(indep_var, val)
-                        
-                    ics[lhs_ic] = rhs_val
+            eq, func_to_solve = await parse_ode(expression)
+            ics = await parse_symbolic_ics(initial_conditions, func_to_solve)
 
-            # 5. Solve ODE
+            # Solve ODE
             loop = asyncio.get_running_loop()
             def _do_dsolve():
                 return sympy.dsolve(eq, func_to_solve, ics=ics if ics else None)
-            
+
             solution = await loop.run_in_executor(None, _do_dsolve)
-            
+
             embed = math_embed(
                 title="Differential Equation Solution",
                 result="Solution attached as image",
                 footer=f"Parsed ODE: {eq}"
             )
             embed.set_image(url="attachment://formula.png")
-            
+
             file = await result_to_image(solution)
-            
+
             await interaction.followup.send(embed=embed, file=file)
-            
+
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
         except sympy.SympifyError as exc:
@@ -667,7 +640,116 @@ class CalculusCog(commands.Cog, name="Calculus"):
                 embed=error_embed(f"Expression couldn't be treated as a polynomial: {exc}")
             )
         except NotImplementedError:
-            await interaction.followup.send(embed=error_embed("SymPy could not solve this ODE."))
+            await interaction.followup.send(embed=error_embed(
+                "SymPy could not find a closed-form solution to this ODE. "
+                "Try `/calc ode_numeric` for a numeric trajectory instead "
+                "(requires initial conditions and an integration range)."
+            ))
+        except Exception as exc:
+            await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
+
+    # -----------------------------------------------------------------------
+    # /ode_numeric
+    # -----------------------------------------------------------------------
+
+    @calc.command(
+        name="ode_numeric",
+        description="Numerically integrate a differential equation that has no closed-form solution.",
+    )
+    @app_commands.describe(
+        expression="The ODE, e.g. y' = sin(x*y) or y'' + y = 0",
+        initial_conditions="Required, given at x_start, e.g. y(0)=1, y'(0)=0",
+        x_start="Start of the integration interval — must match the initial condition's x point",
+        x_end="End of the integration interval",
+        steps="Number of output points to plot (10-2000, default 200)",
+        method="Integration method (default RK45; try Radau/BDF for stiff systems)",
+    )
+    @app_commands.choices(method=[
+        app_commands.Choice(name="RK45 (default, non-stiff)", value="RK45"),
+        app_commands.Choice(name="RK23 (lower order, non-stiff)", value="RK23"),
+        app_commands.Choice(name="Radau (implicit, stiff)", value="Radau"),
+        app_commands.Choice(name="BDF (implicit, stiff)", value="BDF"),
+        app_commands.Choice(name="LSODA (auto-switching)", value="LSODA"),
+    ])
+    @app_commands.checks.cooldown(1, 5.0)
+    async def ode_numeric(
+        self,
+        interaction: discord.Interaction,
+        expression: str,
+        initial_conditions: str,
+        x_start: float,
+        x_end: float,
+        steps: app_commands.Range[int, 10, 2000] = 200,
+        method: str = "RK45",
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            if x_end <= x_start:
+                raise ValueError("`x_end` must be greater than `x_start`.")
+
+            eq, func_to_solve = await parse_ode(expression)
+            order = ode_order(eq)
+            ics = await parse_symbolic_ics(initial_conditions, func_to_solve)
+            x0, y0 = extract_numeric_ics(ics, order)
+
+            if not (x_start <= x0 <= x_end):
+                raise ValueError(
+                    f"Initial condition is given at x={x0:g}, which lies outside "
+                    f"the integration range [{x_start:g}, {x_end:g}]."
+                )
+            if abs(x0 - x_start) > 1e-9:
+                raise ValueError(
+                    f"The initial condition is given at x={x0:g}, but `x_start` is "
+                    f"{x_start:g}. Numeric integration requires the initial condition "
+                    f"to be at x_start — set `x_start={x0:g}`, or split the problem "
+                    "into two calls (one integrating backward to your earlier bound, "
+                    "one forward to your later bound)."
+                )
+
+            indep_var = func_to_solve.args[0] if func_to_solve.args else sympy.Symbol("x")
+
+            loop = asyncio.get_running_loop()
+
+            def _do_solve():
+                rhs = build_numeric_rhs(eq, func_to_solve, indep_var, order)
+                t_eval = np.linspace(x_start, x_end, steps)
+                return solve_ivp(rhs, [x_start, x_end], y0, method=method, t_eval=t_eval)
+
+            result = await loop.run_in_executor(None, _do_solve)
+
+            if not result.success:
+                raise ValueError(
+                    f"Integration failed: {result.message}  "
+                    "Try a different method (Radau/BDF often help with stiff systems) "
+                    "or a smaller interval."
+                )
+
+            func_name = str(func_to_solve.func)
+
+            def _do_plot():
+                return _ode_numeric_plot_bytes(result.t, result.y, func_name, order)
+
+            buf = await loop.run_in_executor(None, _do_plot)
+
+            final_state = ", ".join(
+                f"{func_name}{chr(0x2032) * k}({x_end:g}) ≈ {result.y[k][-1]:.6g}"
+                for k in range(order)
+            )
+
+            embed = math_embed(
+                title="Numeric ODE Solution",
+                result=f"Integration complete over [{x_start:g}, {x_end:g}]\n\n{final_state}",
+                footer=f"Parsed ODE: {eq}  |  method: {method}  |  {steps} points",
+            )
+            embed.set_image(url="attachment://ode_numeric.png")
+            file = discord.File(buf, filename="ode_numeric.png")
+
+            await interaction.followup.send(embed=embed, file=file)
+
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+        except sympy.SympifyError as exc:
+            await interaction.followup.send(embed=error_embed(f"Could not parse expression: {exc}"))
         except Exception as exc:
             await interaction.followup.send(embed=error_embed(f"An unexpected error occurred: {exc}"))
 

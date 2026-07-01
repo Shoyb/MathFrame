@@ -9,6 +9,7 @@ Commands
 /dot          vec_a  vec_b             Dot product of two vectors.
 /cross        vec_a  vec_b             Cross product of two 3-D vectors.
 /rref         matrix                   Reduced row-echelon form of a matrix.
+/solve        matrix  vector           Solve a linear system Ax = b.
 
 Matrix / vector input format
 ----------------------------
@@ -409,6 +410,107 @@ class LinearAlgebraCog(commands.Cog, name="Linear Algebra"):
                     f"Pivot columns: {pivot_str}  |  "
                     f"Rank: {rank}  |  "
                     f"Original: {mat.rows}×{mat.cols}"
+                ),
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /solve  (Ax = b)
+    # -----------------------------------------------------------------------
+
+    @mat.command(
+        name="solve",
+        description="Solve a linear system Ax = b.",
+    )
+    @app_commands.describe(
+        matrix='Coefficient matrix A as a JSON 2-D array, e.g. [[2,1],[1,3]]',
+        vector="Right-hand side b as a JSON array, e.g. [5,10]",
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def solve_linear(
+        self,
+        interaction: discord.Interaction,
+        matrix: str,
+        vector: str,
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            mat_a = self.parse_matrix(matrix)
+            b_list = _parse_vector(vector, "vector")
+
+            if len(b_list) != mat_a.rows:
+                raise ValueError(
+                    f"`vector` must have one entry per row of `matrix` "
+                    f"(matrix has {mat_a.rows} rows, vector has {len(b_list)} entries)."
+                )
+
+            b = sympy.Matrix(b_list)
+            augmented = mat_a.row_join(b)
+
+            rank_a   = mat_a.rank()
+            rank_aug = augmented.rank()
+
+            # --- Inconsistent: no exact solution, but offer least-squares fit ------
+            if rank_a < rank_aug:
+                a_np = np.array(mat_a.tolist(), dtype=float)
+                b_np = np.array(b_list, dtype=float)
+                x_ls, *_ = np.linalg.lstsq(a_np, b_np, rcond=None)
+                ls_str = "\n".join(f"x{i+1} ≈ {v:.6g}" for i, v in enumerate(x_ls))
+                embed = math_embed(
+                    title="Linear System — No Exact Solution",
+                    result=f"Inconsistent system (no x satisfies Ax = b exactly).\n\n"
+                            f"Closest least-squares fit:\n{ls_str}",
+                    footer=(
+                        f"rank(A) = {rank_a}  |  rank([A|b]) = {rank_aug}  |  "
+                        f"A is {mat_a.rows}×{mat_a.cols}"
+                    ),
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            # --- Square, non-singular: unique exact solution -----------------------
+            if mat_a.rows == mat_a.cols and mat_a.det() != 0:
+                x = mat_a.solve(b)
+                result_str = "\n".join(f"x{i+1} = {x[i]}" for i in range(x.rows))
+                embed = math_embed(
+                    title="Linear System — Unique Solution",
+                    result=result_str,
+                    footer=f"Ax = b  |  {mat_a.rows}×{mat_a.cols} system  |  exact fractions preserved",
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            # --- Consistent but underdetermined: infinitely many solutions ---------
+            if rank_a == rank_aug and rank_a < mat_a.cols:
+                sol, params = mat_a.gauss_jordan_solve(b)
+                result_str = "\n".join(f"x{i+1} = {sol[i]}" for i in range(sol.rows))
+                free_count = mat_a.cols - rank_a
+                param_names = ", ".join(str(p) for p in params) if params.rows else "—"
+                embed = math_embed(
+                    title="Linear System — Infinitely Many Solutions",
+                    result=result_str,
+                    footer=(
+                        f"rank(A) = {rank_a}  |  {free_count} free parameter(s) "
+                        f"({param_names})  |  {mat_a.rows}×{mat_a.cols} system"
+                    ),
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            # --- Consistent, overdetermined, rank == cols: exact unique solution ---
+            # (more equations than unknowns, but they agree — not square, so the
+            # branch above doesn't catch it; gauss_jordan_solve handles it exactly,
+            # with no free parameters since rank == cols.)
+            sol, _params = mat_a.gauss_jordan_solve(b)
+            result_str = "\n".join(f"x{i+1} = {sol[i]}" for i in range(sol.rows))
+            embed = math_embed(
+                title="Linear System — Unique Solution",
+                result=result_str,
+                footer=(
+                    f"Overdetermined but consistent  |  "
+                    f"{mat_a.rows}×{mat_a.cols} system  |  exact fractions preserved"
                 ),
             )
             await interaction.followup.send(embed=embed)

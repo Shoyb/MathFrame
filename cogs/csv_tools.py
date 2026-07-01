@@ -472,8 +472,13 @@ class CSVPlotView(ui.View):
         x_sel.callback = self._on_col_x
         self.add_item(x_sel)
 
-        # Row 2 — Y column (hidden for histogram / box / heatmap)
-        if cfg.plot_type not in ("histogram", "heatmap"):
+        # Row 2 — Y column (scatter / line / bar only; box uses col_x, heatmap is auto)
+        # Discord allows only ONE select per row, so the style select goes here when
+        # row 2 is otherwise free (histogram / box).  Line would benefit from style
+        # too, but it needs Y on row 2 — solid is a fine default given the hard
+        # 5-row limit on Discord message components.
+        needs_y_on_row2 = cfg.plot_type in ("scatter", "line", "bar")
+        if needs_y_on_row2:
             y_opts = self._column_options(include_empty=True)
             y_sel = ui.Select(
                 placeholder=f"Y column: {cfg.col_y or '—'}",
@@ -482,8 +487,19 @@ class CSVPlotView(ui.View):
             )
             y_sel.callback = self._on_col_y
             self.add_item(y_sel)
+        elif cfg.plot_type in ("histogram", "box"):
+            # Row 2 is free — expose the line-style picker so users can pre-set it.
+            style_sel = ui.Select(
+                placeholder=f"Line style: {cfg.style}",
+                options=[discord.SelectOption(label=s, value=s, default=(s == cfg.style))
+                         for s in _STYLES],
+                row=2,
+            )
+            style_sel.callback = self._on_style
+            self.add_item(style_sel)
+        # heatmap: row 2 stays empty (X/Y/style all unused)
 
-        # Row 3 — colour + style selects
+        # Row 3 — colour select  (ONE select only — two selects per row is invalid)
         colour_sel = ui.Select(
             placeholder="Colour",
             options=[discord.SelectOption(label=c, value=c, default=(c == cfg.color))
@@ -492,15 +508,6 @@ class CSVPlotView(ui.View):
         )
         colour_sel.callback = self._on_colour
         self.add_item(colour_sel)
-
-        style_sel = ui.Select(
-            placeholder=f"Style: {cfg.style}",
-            options=[discord.SelectOption(label=s, value=s, default=(s == cfg.style))
-                     for s in _STYLES],
-            row=3,
-        )
-        style_sel.callback = self._on_style
-        self.add_item(style_sel)
 
         # Row 4 — action buttons
         render_btn = ui.Button(
@@ -609,7 +616,7 @@ class CSVPlotView(ui.View):
 
         # Basic validation
         cfg = self.cfg
-        needs_x = cfg.plot_type in ("scatter", "line", "histogram", "bar")
+        needs_x = cfg.plot_type in ("scatter", "line", "histogram", "bar", "box")
         needs_y = cfg.plot_type in ("scatter", "line", "bar")
         if needs_x and not cfg.col_x:
             await interaction.response.send_message(
@@ -624,7 +631,7 @@ class CSVPlotView(ui.View):
 
         await interaction.response.defer()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             buf: io.BytesIO = await loop.run_in_executor(
                 None, _render_csv_plot, cfg, session
@@ -688,7 +695,7 @@ class CSVTools(commands.Cog):
     # ------------------------------------------------------------------ upload
 
     @csv_group.command(name="upload", description="Upload a CSV file to analyse")
-    @app_commands.describe(file="A .csv file (max 2 MB, 10 000 rows, 50 columns)")
+    @app_commands.describe(file="A .csv file (max 25 MB, 10 000 rows, 50 columns)")
     async def csv_upload(
         self,
         interaction: discord.Interaction,
@@ -950,7 +957,7 @@ class CSVTools(commands.Cog):
             em.add_field(name="n",          value=f"`{n}`",             inline=True)
             em.set_footer(text=_session_footer(session))
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             buf = await loop.run_in_executor(
                 None, _regression_plot_bytes, xs, ys, slope, intercept, r_sq, col_x, col_y
             )

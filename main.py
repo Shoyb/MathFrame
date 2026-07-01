@@ -43,6 +43,9 @@ COGS: list[str] = [
     "cogs.symbolic",     # /sym
     "cogs.complex",      # /cx
     "cogs.base_n",       # /base
+    "cogs.random_tools", # /rand   — Phase 1 of Random/Probability/Quiz plan
+    "cogs.probability",  # /prob   — Phase 3 of Random/Probability/Quiz plan
+    "cogs.quiz",         # /quiz   — Phase 4 of Random/Probability/Quiz plan (solo practice)
     "cogs.memory",       # /mem   — already a group (no changes needed)
     "cogs.bot",          # /bot   — merged: utility + wiki
     "cogs.render",       # /render
