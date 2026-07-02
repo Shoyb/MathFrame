@@ -18,9 +18,11 @@ Commands
 /prob sample        distribution n [params...]        Draw n samples, show histogram + full stats summary.
 /prob dice_sum       notation target                    Exact P(dice sum == target).
 /prob bayes          prior sensitivity fpr               Bayes' theorem: P(A|B).
+/prob conditional    2x2 contingency table counts        P(A|B), P(B|A), independence check.
 /prob card_draw      population successes draws target  Hypergeometric: P(exactly target successes).
 /prob urn            red blue draws [trials]             Urn draw: exact distribution + Monte Carlo cross-check.
 /prob birthday       n_people [days] [simulate]          Birthday paradox: exact (+ optional simulated) probability.
+/prob set_sample     items k [replacement] [trials]      Repeated set sampling: empirical outcome-frequency distribution.
 /prob monte_carlo_pi trials                              Estimate π via random points in a circle.
 /prob buffon         needle_length line_spacing trials   Estimate π via Buffon's needle.
 """
@@ -44,6 +46,7 @@ from utils.probability_math import (
     dice_sum_distribution,
     dice_sum_probability,
     bayes_theorem,
+    conditional_from_counts,
     hypergeometric_pmf,
     urn_distribution,
     urn_monte_carlo,
@@ -52,6 +55,7 @@ from utils.probability_math import (
     monte_carlo_pi,
     buffon_pi,
     sample_distribution,
+    set_sample_distribution,
     DIST_PARAM_NAMES,
 )
 
@@ -168,6 +172,32 @@ def _monte_carlo_pi_bytes(trials: int, rng: random.Random) -> tuple[io.BytesIO, 
     ax.set_aspect("equal")
     ax.set_title(f"Monte Carlo π estimation (illustrating {len(xs)} of {trials} points)", fontsize=11, pad=6)
     ax.legend(loc="upper right", fontsize=8)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _set_sample_bytes(counts: dict[tuple, int], trials: int, top_n: int = 15) -> io.BytesIO:
+    """Render the top *top_n* most frequent outcomes from a set_sample run as a bar chart."""
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+    labels = [", ".join(map(str, outcome)) for outcome, _ in ranked]
+    freqs = [c / trials for _, c in ranked]
+
+    fig, ax = plt.subplots(figsize=(8, max(3, 0.35 * len(labels) + 1)))
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    y_pos = range(len(labels))
+    ax.barh(list(y_pos), freqs, color="steelblue", edgecolor="white")
+    ax.set_yticks(list(y_pos))
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.invert_yaxis()  # highest frequency at the top
+    ax.set_xlabel("Empirical probability", fontsize=10)
+    ax.set_title(f"Top {len(labels)} outcomes over {trials} trials", fontsize=12, pad=6)
+    ax.grid(True, alpha=0.3, axis="x")
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
@@ -350,6 +380,52 @@ class ProbabilityCog(commands.Cog, name="Probability"):
             await interaction.followup.send(embed=error_embed(str(exc)))
 
     # -----------------------------------------------------------------------
+    # /prob conditional
+    # -----------------------------------------------------------------------
+
+    @prob.command(
+        name="conditional",
+        description="Conditional probability from a 2x2 contingency table: P(A|B), P(B|A), independence check.",
+    )
+    @app_commands.describe(
+        a_and_b="Count of outcomes where both A and B occurred",
+        a_and_not_b="Count of outcomes where A occurred but B did not",
+        not_a_and_b="Count of outcomes where B occurred but A did not",
+        not_a_and_not_b="Count of outcomes where neither A nor B occurred",
+    )
+    @app_commands.checks.cooldown(1, 3.0)
+    async def conditional(
+        self,
+        interaction: discord.Interaction,
+        a_and_b: app_commands.Range[int, 0, None],
+        a_and_not_b: app_commands.Range[int, 0, None],
+        not_a_and_b: app_commands.Range[int, 0, None],
+        not_a_and_not_b: app_commands.Range[int, 0, None],
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            r = conditional_from_counts(a_and_b, a_and_not_b, not_a_and_b, not_a_and_not_b)
+            total = a_and_b + a_and_not_b + not_a_and_b + not_a_and_not_b
+            result = (
+                f"P(A) = {r.p_a:.6g}   P(B) = {r.p_b:.6g}   P(A ∩ B) = {r.p_a_and_b:.6g}\n\n"
+                f"P(A|B) = {r.p_a_given_b:.6g}\n"
+                f"P(B|A) = {r.p_b_given_a:.6g}\n\n"
+                f"A and B are {'independent' if r.independent else 'NOT independent'} "
+                f"(P(A∩B) {'==' if r.independent else '≠'} P(A)·P(B))"
+            )
+            embed = math_embed(
+                title="Conditional Probability",
+                result=result,
+                footer=(
+                    f"Table (n={total}): A∩B={a_and_b}, A∩¬B={a_and_not_b}, "
+                    f"¬A∩B={not_a_and_b}, ¬A∩¬B={not_a_and_not_b}"
+                ),
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
     # /prob card_draw
     # -----------------------------------------------------------------------
 
@@ -482,6 +558,69 @@ class ProbabilityCog(commands.Cog, name="Probability"):
                 footer=f"n_people={n_people}, days={days}",
             )
             await interaction.followup.send(embed=embed)
+        except ValueError as exc:
+            await interaction.followup.send(embed=error_embed(str(exc)))
+
+    # -----------------------------------------------------------------------
+    # /prob set_sample
+    # -----------------------------------------------------------------------
+
+    @prob.command(
+        name="set_sample",
+        description="Repeated sampling from a set — empirical outcome-frequency distribution over many trials.",
+    )
+    @app_commands.describe(
+        items="Comma-separated set of items, e.g. 'red,blue,green'",
+        k="Number of items drawn per trial",
+        replacement="Sample with replacement each trial? (default False)",
+        trials="Number of repeated trials (default 1000)",
+    )
+    @app_commands.checks.cooldown(1, 4.0)
+    async def set_sample(
+        self,
+        interaction: discord.Interaction,
+        items: str,
+        k: app_commands.Range[int, 1, 20],
+        replacement: bool = False,
+        trials: app_commands.Range[int, 1, 100000] = 1000,
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            item_list = [t.strip() for t in items.split(",") if t.strip()]
+            if not item_list:
+                raise ValueError("`items` must contain at least one non-empty, comma-separated value.")
+
+            loop = asyncio.get_running_loop()
+
+            def _do_sample():
+                return set_sample_distribution(item_list, k, replacement, trials, random.Random())
+
+            counts = await loop.run_in_executor(None, _do_sample)
+
+            def _do_plot():
+                return _set_sample_bytes(counts, trials)
+
+            buf = await loop.run_in_executor(None, _do_plot)
+            file = discord.File(buf, filename="set_sample.png")
+
+            ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+            top = ranked[:5]
+            lines = [f"{', '.join(outcome)} — {c / trials:.4f} ({c}/{trials})" for outcome, c in top]
+            result = f"{len(counts)} distinct outcome(s) observed. Top 5:\n" + "\n".join(lines)
+            if len(result) > 1000:
+                result = result[:1000] + "…"
+
+            items_preview = ", ".join(item_list)
+            if len(items_preview) > 200:
+                items_preview = items_preview[:200] + f"… (+{len(item_list)} items total)"
+
+            embed = math_embed(
+                title=f"Set Sample — draw {k} of {len(item_list)} items",
+                result=result,
+                footer=f"items: {items_preview}  |  trials={trials}  |  replacement={replacement}",
+            )
+            embed.set_image(url="attachment://set_sample.png")
+            await interaction.followup.send(embed=embed, file=file)
         except ValueError as exc:
             await interaction.followup.send(embed=error_embed(str(exc)))
 

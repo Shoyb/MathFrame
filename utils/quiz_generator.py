@@ -426,8 +426,15 @@ def check_answer(question: Question, user_answer: str) -> bool:
         if question.answer_type == "exact":
             if isinstance(question.correct_answer, str):
                 return raw.lower() == question.correct_answer.lower()
-            # integer exact answer
-            return int(raw) == question.correct_answer
+            # integer exact answer — accept "42" and also "42.0"-style
+            # whole-number float text (a plausible, harmless formatting
+            # choice), but not "42.3" (that's just wrong, not a format
+            # quirk).
+            try:
+                return int(raw) == question.correct_answer
+            except ValueError:
+                as_float = float(raw)  # may itself raise -> caught by the outer except, treated as incorrect
+                return as_float.is_integer() and int(as_float) == question.correct_answer
 
         if question.answer_type == "numeric":
             parsed = parse_expr(raw, transformations=_TRANSFORMATIONS)

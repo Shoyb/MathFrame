@@ -13,7 +13,7 @@ Commands
 /quiz practice    [subject] [difficulty]   Generate one question; answer via a modal button.
 /quiz stats       [user]                   Solved/wrong/streak/rating/achievements for a user.
 /quiz battle      opponent [subject] [difficulty]   Challenge another player to a race.
-/quiz leaderboard [subject]                Top players in this server by rating (or subject).
+/quiz leaderboard [subject] [daily]        Top players in this server by rating, subject, or today's daily challenge.
 /quiz daily                                One question, same for everyone, once per UTC day.
 /quiz hint                                 Reveal the next hint step for your active question.
 
@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import random
 from dataclasses import dataclass
+from datetime import datetime
 
 import discord
 from discord import app_commands, ui
@@ -711,8 +712,11 @@ class QuizCog(commands.Cog, name="Quiz"):
     # /quiz leaderboard
     # -----------------------------------------------------------------------
 
-    @quiz.command(name="leaderboard", description="Top players in this server by rating (or by subject).")
-    @app_commands.describe(subject="Rank by this subject's solved count instead of overall rating")
+    @quiz.command(name="leaderboard", description="Top players in this server by rating, subject, or today's daily challenge.")
+    @app_commands.describe(
+        subject="Rank by this subject's solved count instead of overall rating (ignored if daily=True)",
+        daily="Show today's daily-challenge leaderboard (fastest correct answers) instead",
+    )
     @app_commands.choices(
         subject=[app_commands.Choice(name=_SUBJECT_LABELS[s], value=s) for s in SUBJECTS],
     )
@@ -721,6 +725,7 @@ class QuizCog(commands.Cog, name="Quiz"):
         self,
         interaction: discord.Interaction,
         subject: str | None = None,
+        daily: bool = False,
     ) -> None:
         await interaction.response.defer()
         guild_id = interaction.guild_id
@@ -728,6 +733,25 @@ class QuizCog(commands.Cog, name="Quiz"):
             await interaction.followup.send(
                 embed=error_embed("Leaderboards are server-specific — use this command inside a server.")
             )
+            return
+
+        if daily:
+            date_str = get_daily_date_str()
+            daily_entries = get_daily_leaderboard(guild_id, date_str)
+            if not daily_entries:
+                await interaction.followup.send(
+                    embed=info_embed(
+                        "Daily Challenge Leaderboard",
+                        "No one has solved today's daily challenge yet — be the first with `/quiz daily`!",
+                    )
+                )
+                return
+            lines = []
+            for i, e in enumerate(daily_entries, start=1):
+                ts = int(datetime.fromisoformat(e["answered_at"]).timestamp())
+                lines.append(f"**{i}.** <@{e['user_id']}> — solved <t:{ts}:T>")
+            embed = _mention_embed(f"Daily Challenge Leaderboard — {date_str}", "\n".join(lines))
+            await interaction.followup.send(embed=embed)
             return
 
         entries = get_leaderboard(guild_id, subject)

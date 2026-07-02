@@ -249,8 +249,145 @@ def buffon_pi(needle_length: float, line_spacing: float, trials: int, rng: rando
 
 
 # ---------------------------------------------------------------------------
-# Distribution sampling ("set generator")
+# Conditional probability from a 2x2 contingency table
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ConditionalResult:
+    p_a: float
+    p_b: float
+    p_a_and_b: float
+    p_a_given_b: float
+    p_b_given_a: float
+    independent: bool
+
+
+def conditional_from_counts(
+    a_and_b: int, a_and_not_b: int, not_a_and_b: int, not_a_and_not_b: int
+) -> ConditionalResult:
+    """
+    Compute ``P(A|B)``, ``P(B|A)``, and an independence check from raw
+    2x2 contingency-table cell counts.
+
+    Parameters
+    ----------
+    a_and_b, a_and_not_b, not_a_and_b, not_a_and_not_b:
+        The four cell counts of the table::
+
+                        B         not B
+                 A   a_and_b   a_and_not_b
+             not A   not_a_and_b   not_a_and_not_b
+
+    Independence is checked via ``P(A ∩ B) == P(A) * P(B)`` within a small
+    floating-point tolerance — exact equality would almost never hold for
+    real (integer-count) data even when the underlying variables really
+    are independent.
+
+    Raises
+    ------
+    ValueError
+        If any count is negative, all four counts are zero, or a
+        requested conditional probability's denominator is zero
+        (``P(A) = 0`` or ``P(B) = 0``).
+    """
+    for name, value in (
+        ("a_and_b", a_and_b),
+        ("a_and_not_b", a_and_not_b),
+        ("not_a_and_b", not_a_and_b),
+        ("not_a_and_not_b", not_a_and_not_b),
+    ):
+        if value < 0:
+            raise ValueError(f"`{name}` must be non-negative (got {value}).")
+
+    total = a_and_b + a_and_not_b + not_a_and_b + not_a_and_not_b
+    if total == 0:
+        raise ValueError("The contingency table is empty — all four counts are zero.")
+
+    p_a = (a_and_b + a_and_not_b) / total
+    p_b = (a_and_b + not_a_and_b) / total
+    p_a_and_b = a_and_b / total
+
+    if p_b == 0:
+        raise ValueError("P(B) = 0 — P(A|B) is undefined (division by zero).")
+    if p_a == 0:
+        raise ValueError("P(A) = 0 — P(B|A) is undefined (division by zero).")
+
+    p_a_given_b = p_a_and_b / p_b
+    p_b_given_a = p_a_and_b / p_a
+    independent = abs(p_a_and_b - p_a * p_b) < 1e-9
+
+    return ConditionalResult(
+        p_a=p_a,
+        p_b=p_b,
+        p_a_and_b=p_a_and_b,
+        p_a_given_b=p_a_given_b,
+        p_b_given_a=p_b_given_a,
+        independent=independent,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Repeated set sampling ("set generator", the other half — /prob set_sample)
+# ---------------------------------------------------------------------------
+
+
+def set_sample_distribution(
+    items: list[str], k: int, replacement: bool, trials: int, rng: random.Random
+) -> dict[tuple[str, ...], int]:
+    """
+    Draw *k* items from *items* on each of *trials* independent repetitions
+    (with or without replacement per repetition) and tally how often each
+    distinct outcome occurred.
+
+    Unlike ``/rand sample`` (Phase 1), which returns ONE outcome, this
+    reports the empirical distribution OVER outcomes across many trials —
+    that's the distinguishing feature per the plan doc.
+
+    Each outcome is order-independent (sorted tuple of the drawn items) —
+    "drawing red then blue" and "drawing blue then red" are the same
+    outcome for a set-sampling distribution.
+
+    Raises
+    ------
+    ValueError
+        If *items* is empty, contains more than 30 entries, contains an
+        item longer than 40 characters, *k* is not a positive integer,
+        *k* exceeds ``len(items)`` while *replacement* is ``False``, or
+        *trials* is not a positive integer.
+
+        The 30-item / 40-character caps exist to keep the caller's
+        rendered output (embed title, chart labels) within Discord's
+        embed field limits — without them, a long comma-separated list
+        silently breaks the command with an opaque Discord API error
+        instead of a clear message.
+    """
+    if not items:
+        raise ValueError("`items` must not be empty.")
+    if len(items) > 30:
+        raise ValueError(
+            f"Too many items ({len(items)}) — please provide at most 30 distinct items per call."
+        )
+    for item in items:
+        if len(item) > 40:
+            raise ValueError(
+                f"Item name too long (`{item[:40]}…`) — keep each item under 40 characters."
+            )
+    if k < 1:
+        raise ValueError("`k` must be at least 1.")
+    if not replacement and k > len(items):
+        raise ValueError(
+            f"Can't sample {k} items without replacement from a set of only {len(items)}. "
+            f"Either reduce `k` or set `replacement=True`."
+        )
+    if trials < 1:
+        raise ValueError("`trials` must be at least 1.")
+
+    counts: dict[tuple[str, ...], int] = {}
+    for _ in range(trials):
+        draw = tuple(sorted(rng.choices(items, k=k))) if replacement else tuple(sorted(rng.sample(items, k)))
+        counts[draw] = counts.get(draw, 0) + 1
+    return counts
 
 _SUPPORTED_DISTRIBUTIONS = ("normal", "binomial", "poisson", "uniform", "exponential")
 
