@@ -42,6 +42,8 @@ from sympy.parsing.sympy_parser import (
     implicit_multiplication_application,
 )
 
+from utils.parser import parse_expression
+
 SUBJECTS = ("algebra", "calculus", "number_theory", "discrete")
 DIFFICULTIES = ("easy", "medium", "hard")
 
@@ -400,18 +402,24 @@ def generate_question(
 # ---------------------------------------------------------------------------
 
 
-def check_answer(question: Question, user_answer: str) -> bool:
+async def check_answer(question: Question, user_answer: str) -> bool:
     """
     Check whether *user_answer* (raw text as typed by the user) matches
     *question*'s correct answer.
 
-    - ``symbolic`` answers: parsed with the same implicit-multiplication
-      parser used elsewhere in this codebase, then checked for symbolic
-      equivalence via ``sympy.simplify(user - correct) == 0`` — so
+    - ``symbolic`` and ``numeric`` answers are parsed through
+      :func:`utils.parser.parse_expression` — the same pipeline every
+      other cog's expression inputs go through. This means quiz answers
+      accept the same range of notation the rest of the bot does: plain
+      caret exponents (``2x^2 + 8x``), implicit multiplication (``2x``),
+      Python-style (``2*x**2 + 8*x``), and LaTeX (``2x^{2} + 8x``) all
+      normalize to the same expression before comparison. Equivalence is
+      then checked via ``sympy.simplify(user - correct) == 0`` — so
       differently-formatted-but-equal answers (``"2*x"`` vs ``"x+x"``,
-      ``"1/2"`` vs ``"0.5"``) are both accepted.
-    - ``numeric`` answers: parsed the same way, compared via
-      ``math.isclose`` for float tolerance.
+      ``"1/2"`` vs ``"0.5"``) are both accepted regardless of notation.
+    - ``numeric`` answers additionally get a float-tolerance fallback via
+      ``math.isclose`` for cases where ``simplify`` can't resolve a
+      floating-point rounding difference to an exact 0.
     - ``exact`` answers (yes/no, integer counts): case-insensitive string
       comparison for strings, exact integer comparison for numbers.
 
@@ -436,15 +444,14 @@ def check_answer(question: Question, user_answer: str) -> bool:
                 as_float = float(raw)  # may itself raise -> caught by the outer except, treated as incorrect
                 return as_float.is_integer() and int(as_float) == question.correct_answer
 
-        if question.answer_type == "numeric":
-            parsed = parse_expr(raw, transformations=_TRANSFORMATIONS)
+        if question.answer_type in ("numeric", "symbolic"):
+            parsed = await parse_expression(raw)
             diff = sympy.simplify(parsed - question.correct_answer)
-            return diff == 0
-
-        if question.answer_type == "symbolic":
-            parsed = parse_expr(raw, transformations=_TRANSFORMATIONS)
-            diff = sympy.simplify(parsed - question.correct_answer)
-            return diff == 0
+            if diff == 0:
+                return True
+            if question.answer_type == "numeric" and diff.is_number:
+                return math.isclose(float(diff), 0.0, abs_tol=1e-9)
+            return False
 
     except Exception:
         return False

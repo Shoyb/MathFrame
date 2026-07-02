@@ -6,6 +6,8 @@ Start the bot with:
 """
 
 import logging
+import os
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 
 import discord
@@ -14,16 +16,36 @@ from discord.ext import commands
 
 import config
 from data.permissions import is_command_allowed
+from utils.bot_diagnostics import LOG_DIR, LOG_FILE
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+#
+# Two handlers: the existing console stream (unchanged — still what you see
+# when running `python main.py` directly) plus a rotating file so there's
+# somewhere for /admin logs to actually read from. Capped at 5 MB x 3 backup
+# files (~15 MB max on disk) so a busy bot can't quietly fill the disk.
+# LOG_FILE is defined once in utils/bot_diagnostics.py and imported here AND
+# by cogs/admin.py, so the writer and the reader can never point at
+# different paths.
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+os.makedirs(LOG_DIR, exist_ok=True)
+
+_log_formatter = logging.Formatter(
+    fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+_file_handler = RotatingFileHandler(
+    LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+)
+_file_handler.setFormatter(_log_formatter)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -61,6 +83,21 @@ intents = discord.Intents.default()
 intents.message_content = True   # required to read message content in prefix commands
 
 bot = commands.Bot(command_prefix=config.PREFIX, intents=intents)
+
+
+async def _setup_hook() -> None:
+    """
+    Runs once, before login completes and before the first on_ready.
+    Opens the shared SQLite connection (and runs the one-time JSON
+    migration) before any cog can be loaded, since several cogs
+    (quiz, admin) touch the database as soon as they're used.
+    """
+    from data.db import init_db
+    await init_db()
+    log.info("Database initialized.")
+
+
+bot.setup_hook = _setup_hook
 
 # ---------------------------------------------------------------------------
 # Events
@@ -132,28 +169,36 @@ async def ping(interaction: discord.Interaction) -> None:
 # Global before_invoke — permission enforcement
 # ---------------------------------------------------------------------------
 
-@bot.tree.interaction_check
 async def _permission_check(interaction: discord.Interaction) -> bool:
     """
     Global pre-invoke check for all slash commands.
 
     Consults ``data.permissions.is_command_allowed()`` using the guild ID,
-    channel ID, and command name.  If the rule denies the command, an
+    channel ID, and command name. If the rule denies the command, an
     ephemeral error message is sent and ``False`` is returned so discord.py
     cancels the invocation before the cog handler runs.
 
     DMs (no guild) are always allowed; the admin system is guild-only.
+
+    Uses ``interaction.command.qualified_name`` (e.g. ``"quiz practice"``,
+    ``"prob sample"``) rather than ``interaction.command.name`` (just
+    ``"practice"``, just ``"sample"``). Several subcommands across
+    different groups share a leaf name (``sample`` exists under both
+    ``/rand`` and ``/prob``; ``solve``, ``convert``, ``table``, and
+    ``clear`` also collide) — checking only the leaf name would make
+    ``/admin disable`` on one of those silently disable the other,
+    unrelated command too.
     """
     if interaction.guild_id is None:
         return True  # DMs always allowed
 
-    command_name = interaction.command.name if interaction.command else None
+    command_name = interaction.command.qualified_name if interaction.command else None
     if command_name is None:
         return True
 
     channel_id = interaction.channel_id or 0
 
-    if not is_command_allowed(interaction.guild_id, channel_id, command_name):
+    if not await is_command_allowed(interaction.guild_id, channel_id, command_name):
         await interaction.response.send_message(
             f"🚫 `/{command_name}` is disabled in this channel. "
             "Ask a server admin to enable it with `/admin enable`.",
@@ -162,6 +207,20 @@ async def _permission_check(interaction: discord.Interaction) -> bool:
         return False
 
     return True
+
+
+# NOTE: this MUST be a direct assignment, not a ``@bot.tree.interaction_check``
+# decorator. ``CommandTree.interaction_check`` is documented as an
+# overridable method (meant for subclassing), not a registration hook —
+# decorating with it just calls the bound method once at import time with
+# ``_permission_check`` passed in as the ``interaction`` argument, produces
+# an unawaited coroutine, and leaves the tree's default ``interaction_check``
+# (which unconditionally returns ``True``) as what actually runs during
+# dispatch. That silently made every ``/admin enable`` / ``/admin disable``
+# rule a no-op — the permission system was never actually being consulted.
+# Direct assignment onto the tree instance is the correct, documented way
+# to install a check function that isn't part of a CommandTree subclass.
+bot.tree.interaction_check = _permission_check
 
 # ---------------------------------------------------------------------------
 # Global app_commands error handler
@@ -223,7 +282,7 @@ async def on_app_command_error(
     # Unknown / unexpected error - log full traceback -------------------------
     log.exception(
         "Unhandled error in command /%s: %s",
-        interaction.command.name if interaction.command else "unknown",
+        interaction.command.qualified_name if interaction.command else "unknown",
         error,
     )
     await _ephemeral_reply(

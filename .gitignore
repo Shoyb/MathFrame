@@ -2,3 +2,4 @@
 __pycache__/
 /.venv
 /.agents
+/data/bot.log*

@@ -185,9 +185,9 @@ class PracticeView(ui.View):
         self._answered = True
         _clear_active(self.guild_id, self.user_id)
 
-        before = get_record(self.guild_id, self.user_id)
-        correct = check_answer(self.question, raw_answer)
-        record = record_result(self.guild_id, self.user_id, self.question.subject, correct)
+        before = await get_record(self.guild_id, self.user_id)
+        correct = await check_answer(self.question, raw_answer)
+        record = await record_result(self.guild_id, self.user_id, self.question.subject, correct)
         new_achievements = _new_achievements(before, record)
 
         for child in self.children:
@@ -273,11 +273,11 @@ class DailyView(ui.View):
         self._answered = True
         _clear_active(self.guild_id, self.user_id)
 
-        before = get_record(self.guild_id, self.user_id)
-        correct = check_answer(self.question, raw_answer)
+        before = await get_record(self.guild_id, self.user_id)
+        correct = await check_answer(self.question, raw_answer)
 
         try:
-            record = record_daily_result(self.guild_id, self.user_id, self.question.subject, correct, self.date_str)
+            record = await record_daily_result(self.guild_id, self.user_id, self.question.subject, correct, self.date_str)
         except ValueError as exc:
             # Only reachable on a genuine double-submit race (e.g. two rapid
             # clicks); the button-disable above prevents the common case.
@@ -463,7 +463,7 @@ class BattleView(ui.View):
 
     async def handle_answer(self, interaction: discord.Interaction, raw_answer: str) -> None:
         user_id = interaction.user.id
-        correct = check_answer(self.question, raw_answer)
+        correct = await check_answer(self.question, raw_answer)
 
         # Server-received-order tie-break: whichever submission acquires the
         # lock first and finds no winner yet claims the win. Concurrent
@@ -508,11 +508,11 @@ class BattleView(ui.View):
             winner_id = self._winner
             loser_id = opponent_id if winner_id == challenger_id else challenger_id
 
-            record_result(self.guild_id, winner_id, self.subject, True)
+            await record_result(self.guild_id, winner_id, self.subject, True)
             if loser_id in self._answered:
-                record_result(self.guild_id, loser_id, self.subject, self._answered[loser_id])
+                await record_result(self.guild_id, loser_id, self.subject, self._answered[loser_id])
 
-            w_rec, l_rec, delta_w, delta_l = apply_battle_result(self.guild_id, winner_id, loser_id)
+            w_rec, l_rec, delta_w, delta_l = await apply_battle_result(self.guild_id, winner_id, loser_id)
 
             description = (
                 f"🏆 <@{winner_id}> wins the battle!\n\n"
@@ -524,7 +524,7 @@ class BattleView(ui.View):
         else:
             # Draw — everyone who submitted was wrong, no rating change.
             for uid, correct in self._answered.items():
-                record_result(self.guild_id, uid, self.subject, correct)
+                await record_result(self.guild_id, uid, self.subject, correct)
             description = (
                 f"Nobody answered correctly — no rating change.\n\n"
                 f"Correct answer: `{self.question.correct_answer}`"
@@ -545,7 +545,7 @@ class BattleView(ui.View):
             child.disabled = True
 
         for uid, correct in self._answered.items():
-            record_result(self.guild_id, uid, self.subject, correct)
+            await record_result(self.guild_id, uid, self.subject, correct)
 
         if self.message is not None:
             try:
@@ -631,7 +631,7 @@ class QuizCog(commands.Cog, name="Quiz"):
         await interaction.response.defer()
         target = user or interaction.user
         guild_id = interaction.guild_id or 0
-        record = get_record(guild_id, target.id)
+        record = await get_record(guild_id, target.id)
 
         total = record["solved"] + record["wrong"]
         accuracy = (record["solved"] / total * 100) if total > 0 else 0.0
@@ -737,7 +737,7 @@ class QuizCog(commands.Cog, name="Quiz"):
 
         if daily:
             date_str = get_daily_date_str()
-            daily_entries = get_daily_leaderboard(guild_id, date_str)
+            daily_entries = await get_daily_leaderboard(guild_id, date_str)
             if not daily_entries:
                 await interaction.followup.send(
                     embed=info_embed(
@@ -754,7 +754,7 @@ class QuizCog(commands.Cog, name="Quiz"):
             await interaction.followup.send(embed=embed)
             return
 
-        entries = get_leaderboard(guild_id, subject)
+        entries = await get_leaderboard(guild_id, subject)
         if not entries:
             await interaction.followup.send(
                 embed=info_embed(
@@ -788,7 +788,7 @@ class QuizCog(commands.Cog, name="Quiz"):
         guild_id = interaction.guild_id or 0
         date_str = get_daily_date_str()
 
-        if has_answered_daily(guild_id, interaction.user.id, date_str):
+        if await has_answered_daily(guild_id, interaction.user.id, date_str):
             await interaction.followup.send(
                 embed=error_embed("You've already answered today's daily challenge. Come back after 00:00 UTC!")
             )
@@ -841,7 +841,7 @@ class QuizCog(commands.Cog, name="Quiz"):
             )
             return
 
-        record = apply_hint_cost(guild_id, interaction.user.id)
+        record = await apply_hint_cost(guild_id, interaction.user.id)
         hint_text = steps[active.hints_revealed]
         active.hints_revealed += 1
 

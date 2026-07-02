@@ -38,8 +38,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN")
-
+DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN")DATABASE_URL: str | None = os.getenv("DATABASE_URL")
 PREFIX: str = "!"
 
 MAX_EXPR_LENGTH: int = 500
